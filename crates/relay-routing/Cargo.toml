@@ -1,0 +1,21 @@
+[package]
+name = "relay-routing"
+description = "Compiled deterministic HTTP routing for Relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+http.workspace = true
+relay-config = { path = "../relay-config" }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
+
