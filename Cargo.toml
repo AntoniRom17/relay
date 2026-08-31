@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = []
+members = ["crates/relay-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -72,4 +72,3 @@ panic = "abort"
 
 [profile.bench]
 debug = true
-
