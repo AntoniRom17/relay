@@ -23,6 +23,7 @@ relay-observability = { path = "../relay-observability" }
 relay-limits = { path = "../relay-limits" }
 relay-routing = { path = "../relay-routing" }
 relay-upstream = { path = "../relay-upstream" }
+rand.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

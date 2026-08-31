@@ -10,14 +10,15 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::{Body, Frame};
-use http_body_util::{BodyExt as _, Full, combinators::UnsyncBoxBody};
+use http_body_util::{BodyExt as _, Empty, Full, combinators::UnsyncBoxBody};
 use hyper::body::Incoming;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
-use relay_config::{AuthPolicyConfig, RateLimitConfig, RateLimitKey};
+use rand::Rng as _;
+use relay_config::{AuthPolicyConfig, RateLimitConfig, RateLimitKey, RetryConfig};
 use relay_core::GatewayError;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::Metrics;
@@ -41,7 +42,7 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Unified streaming response body returned for upstream and local responses.
 pub type ProxyBody = UnsyncBoxBody<Bytes, BoxError>;
 
-type HttpsClient = Client<HttpsConnector<HttpConnector>, Incoming>;
+type HttpsClient = Client<HttpsConnector<HttpConnector>, ProxyBody>;
 
 /// Cloneable Hyper service implementing Relay's core proxy path.
 #[derive(Clone)]
@@ -186,80 +187,127 @@ impl ProxyService {
             )
             .await?;
         }
-        let circuit_permit = plan
-            .circuit
-            .try_acquire()
-            .map_err(|_| GatewayError::CircuitOpen)?;
-        let upstream = plan.pool.try_select().map_err(|error| match error {
-            PoolSelectionError::NoHealthyEndpoint => GatewayError::NoHealthyUpstream,
-            PoolSelectionError::Overloaded => GatewayError::Overloaded,
-        })?;
-        let endpoint = upstream.endpoint();
-        let endpoint_name = endpoint.url().to_string();
-        tracing::Span::current().record("upstream", endpoint_name.as_str());
-
-        let authority = upstream_authority(endpoint.url()).ok_or(GatewayError::Internal)?;
-        let uri =
-            upstream_uri(endpoint.url(), request.uri()).map_err(|_| GatewayError::Internal)?;
-        *request.uri_mut() = uri;
-        prepare_upstream_request(
-            request.headers_mut(),
-            &authority,
-            client_ip,
-            downstream_protocol,
-        )
-        .map_err(|_| GatewayError::Internal)?;
-
-        let upstream_started = Instant::now();
-        let response = match time::timeout(self.request_timeout, self.client.request(request)).await
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                circuit_permit.failure();
-                endpoint.record_passive_failure(3);
-                self.metrics
-                    .upstream_failure(plan.pool.name(), &endpoint_name, "transport");
-                warn!(%error, "upstream transport failed");
-                return Err(GatewayError::UpstreamTransport);
-            }
-            Err(_) => {
-                circuit_permit.failure();
-                endpoint.record_passive_failure(3);
-                self.metrics
-                    .upstream_failure(plan.pool.name(), &endpoint_name, "timeout");
-                warn!("upstream request timed out");
-                return Err(GatewayError::UpstreamTimeout);
-            }
-        };
-        let status = response.status();
-        self.metrics.observe_upstream(
-            plan.pool.name(),
-            &endpoint_name,
-            status.as_u16(),
-            upstream_started.elapsed().as_secs_f64(),
-        );
-        if status.is_server_error() {
-            circuit_permit.failure();
+        let replayable = is_replayable(&request);
+        let template = RequestTemplate::from_request(&request);
+        let max_attempts = if replayable {
+            plan.route.retry.max_attempts
         } else {
-            circuit_permit.success();
-        }
+            1
+        };
+        let mut streaming_request = if replayable {
+            None
+        } else {
+            Some(box_incoming_request(request))
+        };
+        let mut attempt = 0;
 
-        let (mut parts, body) = response.into_parts();
-        prepare_downstream_response(&mut parts.headers);
-        tracing::Span::current().record("status", status.as_u16());
-        info!(status = status.as_u16(), "request headers completed");
-        let body = ObservedBody::new(
-            body,
-            plan,
-            upstream,
-            self.metrics.clone(),
-            started,
-            status,
-            request_method,
-        )
-        .map_err(|error| -> BoxError { Box::new(error) })
-        .boxed_unsync();
-        Ok(Response::from_parts(parts, body))
+        loop {
+            attempt += 1;
+            let upstream = plan.pool.try_select().map_err(|error| match error {
+                PoolSelectionError::NoHealthyEndpoint => GatewayError::NoHealthyUpstream,
+                PoolSelectionError::Overloaded => GatewayError::Overloaded,
+            })?;
+            let endpoint = upstream.endpoint();
+            let endpoint_name = endpoint.url().to_string();
+            tracing::Span::current().record("upstream", endpoint_name.as_str());
+            let mut upstream_request = if replayable {
+                template.build()
+            } else {
+                streaming_request.take().ok_or(GatewayError::Internal)?
+            };
+            let authority = upstream_authority(endpoint.url()).ok_or(GatewayError::Internal)?;
+            let uri = upstream_uri(endpoint.url(), upstream_request.uri())
+                .map_err(|_| GatewayError::Internal)?;
+            *upstream_request.uri_mut() = uri;
+            prepare_upstream_request(
+                upstream_request.headers_mut(),
+                &authority,
+                client_ip,
+                downstream_protocol,
+            )
+            .map_err(|_| GatewayError::Internal)?;
+            let circuit_permit = plan
+                .circuit
+                .try_acquire()
+                .map_err(|_| GatewayError::CircuitOpen)?;
+            let upstream_started = Instant::now();
+            let response =
+                match time::timeout(self.request_timeout, self.client.request(upstream_request))
+                    .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) => {
+                        circuit_permit.failure();
+                        endpoint.record_passive_failure(3);
+                        self.metrics.upstream_failure(
+                            plan.pool.name(),
+                            &endpoint_name,
+                            "transport",
+                        );
+                        warn!(attempt, %error, "upstream transport failed");
+                        if attempt < max_attempts {
+                            self.metrics.retry(&plan.route.name, "transport");
+                            time::sleep(retry_delay(&plan.route.retry, attempt)).await;
+                            continue;
+                        }
+                        return Err(GatewayError::UpstreamTransport);
+                    }
+                    Err(_) => {
+                        circuit_permit.failure();
+                        endpoint.record_passive_failure(3);
+                        self.metrics
+                            .upstream_failure(plan.pool.name(), &endpoint_name, "timeout");
+                        warn!(attempt, "upstream request timed out");
+                        if attempt < max_attempts {
+                            self.metrics.retry(&plan.route.name, "timeout");
+                            time::sleep(retry_delay(&plan.route.retry, attempt)).await;
+                            continue;
+                        }
+                        return Err(GatewayError::UpstreamTimeout);
+                    }
+                };
+            let status = response.status();
+            self.metrics.observe_upstream(
+                plan.pool.name(),
+                &endpoint_name,
+                status.as_u16(),
+                upstream_started.elapsed().as_secs_f64(),
+            );
+            let retryable_status = plan.route.retry.statuses.contains(&status.as_u16());
+            if retryable_status && attempt < max_attempts {
+                circuit_permit.failure();
+                self.metrics.retry(&plan.route.name, "status");
+                drop(response);
+                drop(upstream);
+                time::sleep(retry_delay(&plan.route.retry, attempt)).await;
+                continue;
+            }
+            if status.is_server_error() {
+                circuit_permit.failure();
+            } else {
+                circuit_permit.success();
+            }
+
+            let (mut parts, body) = response.into_parts();
+            prepare_downstream_response(&mut parts.headers);
+            tracing::Span::current().record("status", status.as_u16());
+            info!(
+                status = status.as_u16(),
+                attempt, "request headers completed"
+            );
+            let body = ObservedBody::new(
+                body,
+                plan,
+                upstream,
+                self.metrics.clone(),
+                started,
+                status,
+                request_method,
+            )
+            .map_err(|error| -> BoxError { Box::new(error) })
+            .boxed_unsync();
+            return Ok(Response::from_parts(parts, body));
+        }
     }
 
     async fn enforce_rate_limit(
@@ -381,6 +429,75 @@ impl<B> Drop for ObservedBody<B> {
     }
 }
 
+#[derive(Clone)]
+struct RequestTemplate {
+    method: http::Method,
+    uri: Uri,
+    version: http::Version,
+    headers: http::HeaderMap,
+}
+
+impl RequestTemplate {
+    fn from_request<B>(request: &Request<B>) -> Self {
+        Self {
+            method: request.method().clone(),
+            uri: request.uri().clone(),
+            version: request.version(),
+            headers: request.headers().clone(),
+        }
+    }
+
+    fn build(&self) -> Request<ProxyBody> {
+        let mut request = Request::new(empty_body());
+        *request.method_mut() = self.method.clone();
+        *request.uri_mut() = self.uri.clone();
+        *request.version_mut() = self.version;
+        *request.headers_mut() = self.headers.clone();
+        request
+    }
+}
+
+fn box_incoming_request(request: Request<Incoming>) -> Request<ProxyBody> {
+    request.map(|body| {
+        body.map_err(|error| -> BoxError { Box::new(error) })
+            .boxed_unsync()
+    })
+}
+
+fn empty_body() -> ProxyBody {
+    Empty::<Bytes>::new()
+        .map_err(|never: Infallible| -> BoxError { match never {} })
+        .boxed_unsync()
+}
+
+fn is_replayable<B: Body>(request: &Request<B>) -> bool {
+    matches!(
+        *request.method(),
+        http::Method::GET
+            | http::Method::HEAD
+            | http::Method::PUT
+            | http::Method::DELETE
+            | http::Method::OPTIONS
+            | http::Method::TRACE
+    ) && request.body().size_hint().exact() == Some(0)
+}
+
+fn retry_delay(config: &RetryConfig, failed_attempt: u32) -> Duration {
+    let multiplier = 1_u64
+        .checked_shl(failed_attempt.saturating_sub(1))
+        .unwrap_or(u64::MAX);
+    let exponential = config
+        .base_backoff_ms
+        .saturating_mul(multiplier)
+        .min(config.max_backoff_ms);
+    let jitter = if exponential == 0 {
+        0
+    } else {
+        rand::thread_rng().gen_range(0..=exponential / 2)
+    };
+    Duration::from_millis(exponential.saturating_add(jitter))
+}
+
 fn request_id(value: Option<&HeaderValue>) -> String {
     value
         .and_then(|value| value.to_str().ok())
@@ -440,6 +557,11 @@ fn gateway_error_response(error: &GatewayError, request_id: &str) -> Response<Pr
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    if matches!(error, GatewayError::RateLimited) {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    }
     response
 }
 
