@@ -2,7 +2,9 @@
 
 mod headers;
 mod runtime;
+mod server;
 mod service;
 
 pub use runtime::{RequestPlan, RuntimeBuildError, RuntimeState};
+pub use server::{ServeError, serve_http};
 pub use service::{BoxError, ProxyBody, ProxyService};
