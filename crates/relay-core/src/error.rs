@@ -19,6 +19,9 @@ pub enum GatewayError {
     /// A protection policy deliberately rejected the request.
     #[error("request rejected by overload protection")]
     Overloaded,
+    /// The upstream circuit breaker is open.
+    #[error("upstream circuit breaker is open")]
+    CircuitOpen,
     /// Authentication credentials were missing or invalid.
     #[error("authentication failed")]
     Unauthorized,
@@ -40,7 +43,7 @@ impl GatewayError {
             Self::RouteNotFound => StatusCode::NOT_FOUND,
             Self::NoHealthyUpstream | Self::UpstreamTransport => StatusCode::BAD_GATEWAY,
             Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
-            Self::Overloaded => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Overloaded | Self::CircuitOpen => StatusCode::SERVICE_UNAVAILABLE,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::RequestTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -56,6 +59,7 @@ impl GatewayError {
             Self::UpstreamTimeout => "upstream_timeout",
             Self::UpstreamTransport => "upstream_transport",
             Self::Overloaded => "overloaded",
+            Self::CircuitOpen => "circuit_open",
             Self::Unauthorized => "unauthorized",
             Self::RateLimited => "rate_limited",
             Self::RequestTooLarge => "request_too_large",
@@ -79,6 +83,7 @@ mod tests {
             GatewayError::UpstreamTimeout,
             GatewayError::UpstreamTransport,
             GatewayError::Overloaded,
+            GatewayError::CircuitOpen,
             GatewayError::Unauthorized,
             GatewayError::RateLimited,
             GatewayError::RequestTooLarge,
