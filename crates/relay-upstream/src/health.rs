@@ -66,7 +66,7 @@ async fn run_round(
         });
     }
 
-    loop {
+    while !probes.is_empty() {
         tokio::select! {
             biased;
             () = shutdown.cancelled() => {
@@ -82,7 +82,6 @@ async fn run_round(
                     None => break,
                 }
             }
-            else => break,
         }
     }
 }
@@ -103,5 +102,91 @@ fn record_result(pool: &str, endpoint: &Endpoint, config: &HealthCheckConfig, su
             consecutive_failures = snapshot.consecutive_failures,
             "upstream health state changed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use relay_config::{CircuitBreakerConfig, EndpointConfig, LoadBalancingPolicy, UpstreamConfig};
+
+    use super::*;
+
+    struct ControllableProbe(AtomicBool);
+
+    #[async_trait]
+    impl HealthProbe for ControllableProbe {
+        async fn probe(
+            &self,
+            _endpoint: &Url,
+            _path: &str,
+            _timeout: Duration,
+            _accepted_status: std::ops::RangeInclusive<u16>,
+        ) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    fn pool() -> Arc<Pool> {
+        Arc::new(Pool::from_config(
+            "api",
+            &UpstreamConfig {
+                endpoints: vec![EndpointConfig {
+                    url: "http://127.0.0.1:9001".parse().expect("valid URL"),
+                    weight: 1,
+                }],
+                load_balancing: LoadBalancingPolicy::RoundRobin,
+                health_check: None,
+                circuit_breaker: CircuitBreakerConfig::default(),
+                connect_timeout_ms: 100,
+                concurrency_limit: 8,
+            },
+        ))
+    }
+
+    fn health_config() -> HealthCheckConfig {
+        HealthCheckConfig {
+            path: "/health".to_owned(),
+            interval_ms: 5,
+            timeout_ms: 5,
+            expected_status_min: 200,
+            expected_status_max: 299,
+            healthy_threshold: 2,
+            unhealthy_threshold: 2,
+        }
+    }
+
+    async fn wait_for_health(endpoint: &Endpoint, expected: bool) {
+        tokio::time::timeout(Duration::from_millis(250), async {
+            while endpoint.is_healthy() != expected {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("health state should transition");
+    }
+
+    #[tokio::test]
+    async fn runner_ejects_and_recovers_endpoint_then_stops() {
+        let pool = pool();
+        let probe = Arc::new(ControllableProbe(AtomicBool::new(false)));
+        let shutdown = CancellationToken::new();
+        let task = spawn_health_checks(
+            Arc::clone(&pool),
+            health_config(),
+            Arc::clone(&probe) as Arc<dyn HealthProbe>,
+            shutdown.clone(),
+        );
+
+        wait_for_health(&pool.endpoints()[0], false).await;
+        probe.0.store(true, Ordering::Release);
+        wait_for_health(&pool.endpoints()[0], true).await;
+
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .expect("health task should stop promptly")
+            .expect("health task should not panic");
     }
 }
