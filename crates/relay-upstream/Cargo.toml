@@ -1,0 +1,22 @@
+[package]
+name = "relay-upstream"
+description = "Upstream endpoint state, load balancing, health, and circuit breaking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+relay-config = { path = "../relay-config" }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true
+

@@ -5,6 +5,7 @@ members = [
   "crates/relay-core",
   "crates/relay-observability",
   "crates/relay-routing",
+  "crates/relay-upstream",
 ]
 
 [workspace.package]
