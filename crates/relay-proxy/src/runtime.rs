@@ -1,0 +1,126 @@
+use std::{collections::BTreeMap, sync::Arc};
+
+use http::Request;
+use relay_config::{GatewayConfig, RouteConfig};
+use relay_core::GatewayError;
+use relay_routing::{RouteBuildError, RouteTable};
+use relay_upstream::{CircuitBreaker, Pool};
+use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// Immutable routing and policy state installed in the data plane.
+#[derive(Debug)]
+pub struct RuntimeState {
+    config: Arc<GatewayConfig>,
+    routes: RouteTable,
+    pools: BTreeMap<String, Arc<Pool>>,
+    circuits: BTreeMap<String, CircuitBreaker>,
+    route_concurrency: BTreeMap<String, Arc<Semaphore>>,
+}
+
+impl RuntimeState {
+    /// Builds request-processing state from validated configuration.
+    pub fn build(config: GatewayConfig) -> Result<Self, RuntimeBuildError> {
+        let routes = RouteTable::compile(config.routes.clone())?;
+        let pools = config
+            .upstreams
+            .iter()
+            .map(|(name, upstream)| {
+                (
+                    name.clone(),
+                    Arc::new(Pool::from_config(name.as_str(), upstream)),
+                )
+            })
+            .collect();
+        let circuits = config
+            .upstreams
+            .iter()
+            .map(|(name, upstream)| (name.clone(), CircuitBreaker::new(&upstream.circuit_breaker)))
+            .collect();
+        let route_concurrency = config
+            .routes
+            .iter()
+            .map(|route| {
+                (
+                    route.name.clone(),
+                    Arc::new(Semaphore::new(route.concurrency_limit)),
+                )
+            })
+            .collect();
+
+        Ok(Self {
+            config: Arc::new(config),
+            routes,
+            pools,
+            circuits,
+            route_concurrency,
+        })
+    }
+
+    /// Matches and admits a request to its route-level concurrency budget.
+    pub fn plan<B>(&self, request: &Request<B>) -> Result<RequestPlan, GatewayError> {
+        let matched = self
+            .routes
+            .match_request(request)
+            .ok_or(GatewayError::RouteNotFound)?;
+        let route_permit = self
+            .route_concurrency
+            .get(&matched.route.name)
+            .ok_or(GatewayError::Internal)?
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| GatewayError::Overloaded)?;
+        let pool = Arc::clone(
+            self.pools
+                .get(&matched.route.upstream)
+                .ok_or(GatewayError::Internal)?,
+        );
+        let circuit = self
+            .circuits
+            .get(&matched.route.upstream)
+            .ok_or(GatewayError::Internal)?
+            .clone();
+
+        Ok(RequestPlan {
+            route: matched.route,
+            pool,
+            circuit,
+            _route_permit: route_permit,
+        })
+    }
+
+    /// Returns the active validated configuration.
+    pub fn config(&self) -> &Arc<GatewayConfig> {
+        &self.config
+    }
+
+    /// Returns a configured pool by name.
+    pub fn pool(&self, name: &str) -> Option<&Arc<Pool>> {
+        self.pools.get(name)
+    }
+
+    /// Iterates through configured upstream pools.
+    pub fn pools(&self) -> impl ExactSizeIterator<Item = (&str, &Arc<Pool>)> {
+        self.pools.iter().map(|(name, pool)| (name.as_str(), pool))
+    }
+}
+
+/// Request-scoped policy state retained until the response path completes.
+#[derive(Debug)]
+pub struct RequestPlan {
+    /// Matched route.
+    pub route: Arc<RouteConfig>,
+    /// Selected upstream pool.
+    pub pool: Arc<Pool>,
+    /// Circuit breaker associated with the pool.
+    pub circuit: CircuitBreaker,
+    _route_permit: OwnedSemaphorePermit,
+}
+
+/// Failure to compile runtime request-processing state.
+#[derive(Debug, Error)]
+pub enum RuntimeBuildError {
+    /// Route definitions could not be compiled.
+    #[error(transparent)]
+    Routes(#[from] RouteBuildError),
+}

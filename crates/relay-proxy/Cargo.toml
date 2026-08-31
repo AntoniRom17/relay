@@ -1,0 +1,33 @@
+[package]
+name = "relay-proxy"
+description = "Hyper-based streaming HTTP data plane for Relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+relay-config = { path = "../relay-config" }
+relay-core = { path = "../relay-core" }
+relay-observability = { path = "../relay-observability" }
+relay-routing = { path = "../relay-routing" }
+relay-upstream = { path = "../relay-upstream" }
+rustls.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
+
