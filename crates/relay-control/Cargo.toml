@@ -1,0 +1,26 @@
+[package]
+name = "relay-control"
+description = "Isolated administrative HTTP API for Relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+http.workspace = true
+relay-config = { path = "../relay-config" }
+relay-core = { path = "../relay-core" }
+relay-observability = { path = "../relay-observability" }
+relay-proxy = { path = "../relay-proxy" }
+relay-upstream = { path = "../relay-upstream" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

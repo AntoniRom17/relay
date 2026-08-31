@@ -4,6 +4,7 @@ default-members = ["crates/relay-cli"]
 members = [
   "crates/relay-cli",
   "crates/relay-config",
+  "crates/relay-control",
   "crates/relay-core",
   "crates/relay-observability",
   "crates/relay-proxy",
