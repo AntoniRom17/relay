@@ -274,3 +274,98 @@ pub enum ControlPlaneError {
     #[error("control-plane server failed: {0}")]
     Serve(std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt as _;
+    use relay_config::parse;
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    const CONFIG: &str = r#"
+listeners:
+  - address: 127.0.0.1:8080
+admin:
+  enabled: true
+  address: 127.0.0.1:9090
+routes:
+  - name: api
+    path_prefix: /
+    upstream: api
+upstreams:
+  api:
+    endpoints:
+      - url: http://127.0.0.1:9001
+authentication:
+  api_key_sha256:
+    - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+redis:
+  url: redis://:super-secret@127.0.0.1:6379/0
+"#;
+
+    fn control() -> ControlPlane {
+        let runtime = Arc::new(
+            RuntimeState::build(parse(CONFIG).expect("valid config"))
+                .expect("runtime should build"),
+        );
+        ControlPlane::new(runtime, Metrics::new().expect("metrics should register"))
+    }
+
+    #[tokio::test]
+    async fn health_and_metrics_are_available() {
+        let app = control().router();
+        let health = app
+            .clone()
+            .oneshot(
+                Request::get("/health")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let metrics = app
+            .oneshot(
+                Request::get("/metrics")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(metrics.status(), StatusCode::OK);
+        assert!(
+            metrics.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .expect("ASCII")
+                .contains("text/plain")
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_endpoint_never_serializes_secrets() {
+        let response = control()
+            .router()
+            .oneshot(
+                Request::get("/admin/config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let text = String::from_utf8_lossy(&body);
+
+        assert!(text.contains("redis_configured"));
+        assert!(text.contains("api_key_count"));
+        assert!(!text.contains("super-secret"));
+        assert!(!text.contains("aaaaaaaaaaaaaaaa"));
+    }
+}
