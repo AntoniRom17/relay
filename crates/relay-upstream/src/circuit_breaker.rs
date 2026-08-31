@@ -231,3 +231,61 @@ pub struct BreakerSnapshot {
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
 #[error("upstream circuit is open")]
 pub struct CircuitOpen;
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use super::*;
+
+    fn breaker() -> CircuitBreaker {
+        CircuitBreaker::new(&CircuitBreakerConfig {
+            failure_threshold: 2,
+            recovery_timeout_ms: 5,
+            half_open_probe_limit: 2,
+            success_threshold: 2,
+        })
+    }
+
+    #[test]
+    fn failures_open_then_successful_probes_close_the_circuit() {
+        let breaker = breaker();
+        breaker.try_acquire().expect("closed circuit").failure();
+        assert_eq!(breaker.snapshot().state, CircuitState::Closed);
+        breaker.try_acquire().expect("closed circuit").failure();
+        assert_eq!(breaker.snapshot().state, CircuitState::Open);
+        assert_eq!(breaker.try_acquire().unwrap_err(), CircuitOpen);
+
+        thread::sleep(Duration::from_millis(10));
+        let first = breaker.try_acquire().expect("first recovery probe");
+        let second = breaker.try_acquire().expect("second recovery probe");
+        assert_eq!(breaker.snapshot().state, CircuitState::HalfOpen);
+        assert_eq!(breaker.try_acquire().unwrap_err(), CircuitOpen);
+
+        first.success();
+        assert_eq!(breaker.snapshot().state, CircuitState::HalfOpen);
+        second.success();
+        assert_eq!(breaker.snapshot().state, CircuitState::Closed);
+    }
+
+    #[test]
+    fn a_failed_half_open_probe_reopens_the_circuit() {
+        let breaker = breaker();
+        breaker.try_acquire().expect("closed circuit").failure();
+        breaker.try_acquire().expect("closed circuit").failure();
+        thread::sleep(Duration::from_millis(10));
+
+        breaker.try_acquire().expect("recovery probe").failure();
+
+        assert_eq!(breaker.snapshot().state, CircuitState::Open);
+    }
+
+    #[test]
+    fn cancelled_operation_is_conservatively_recorded_as_failure() {
+        let breaker = breaker();
+
+        drop(breaker.try_acquire().expect("closed circuit"));
+
+        assert_eq!(breaker.snapshot().consecutive_failures, 1);
+    }
+}
