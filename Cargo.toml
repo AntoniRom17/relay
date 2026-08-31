@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/relay-config", "crates/relay-core"]
+members = [
+  "crates/relay-config",
+  "crates/relay-core",
+  "crates/relay-observability",
+]
 
 [workspace.package]
 version = "0.1.0"
