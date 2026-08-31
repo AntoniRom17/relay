@@ -22,6 +22,9 @@ pub enum GatewayError {
     /// The upstream circuit breaker is open.
     #[error("upstream circuit breaker is open")]
     CircuitOpen,
+    /// A required external policy dependency is unavailable.
+    #[error("required gateway dependency is unavailable")]
+    DependencyUnavailable,
     /// Authentication credentials were missing or invalid.
     #[error("authentication failed")]
     Unauthorized,
@@ -43,7 +46,9 @@ impl GatewayError {
             Self::RouteNotFound => StatusCode::NOT_FOUND,
             Self::NoHealthyUpstream | Self::UpstreamTransport => StatusCode::BAD_GATEWAY,
             Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
-            Self::Overloaded | Self::CircuitOpen => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Overloaded | Self::CircuitOpen | Self::DependencyUnavailable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::RequestTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -60,6 +65,7 @@ impl GatewayError {
             Self::UpstreamTransport => "upstream_transport",
             Self::Overloaded => "overloaded",
             Self::CircuitOpen => "circuit_open",
+            Self::DependencyUnavailable => "dependency_unavailable",
             Self::Unauthorized => "unauthorized",
             Self::RateLimited => "rate_limited",
             Self::RequestTooLarge => "request_too_large",
@@ -84,6 +90,7 @@ mod tests {
             GatewayError::UpstreamTransport,
             GatewayError::Overloaded,
             GatewayError::CircuitOpen,
+            GatewayError::DependencyUnavailable,
             GatewayError::Unauthorized,
             GatewayError::RateLimited,
             GatewayError::RequestTooLarge,
