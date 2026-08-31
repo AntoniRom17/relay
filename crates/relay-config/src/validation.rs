@@ -3,7 +3,7 @@ use std::{collections::HashSet, fs, path::Path};
 use http::{HeaderName, HeaderValue, Method};
 use thiserror::Error;
 
-use crate::{AuthPolicyConfig, GatewayConfig};
+use crate::{AuthPolicyConfig, GatewayConfig, RateLimitKey};
 
 /// Failure to read, decode, or semantically validate configuration.
 #[derive(Debug, Error)]
@@ -162,6 +162,13 @@ pub fn validate(config: &GatewayConfig) -> Result<(), ConfigError> {
             if limit.distributed && config.redis.is_none() {
                 problems.push(format!(
                     "{field}.rate_limit.distributed: requires a top-level redis section"
+                ));
+            }
+            if limit.key == RateLimitKey::ApiKey
+                && !matches!(route.authentication, Some(AuthPolicyConfig::ApiKey { .. }))
+            {
+                problems.push(format!(
+                    "{field}.rate_limit.key: api_key scope requires API-key authentication on the route"
                 ));
             }
         }
