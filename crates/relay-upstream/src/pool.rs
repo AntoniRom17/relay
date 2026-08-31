@@ -140,3 +140,51 @@ pub struct EndpointSnapshot {
     /// Current forwarding attempts.
     pub active_requests: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use relay_config::{CircuitBreakerConfig, EndpointConfig};
+
+    use super::*;
+
+    fn config(concurrency_limit: usize) -> UpstreamConfig {
+        UpstreamConfig {
+            endpoints: vec![EndpointConfig {
+                url: "http://127.0.0.1:9001".parse().expect("valid URL"),
+                weight: 1,
+            }],
+            load_balancing: LoadBalancingPolicy::RoundRobin,
+            health_check: None,
+            circuit_breaker: CircuitBreakerConfig::default(),
+            connect_timeout_ms: 1_000,
+            concurrency_limit,
+        }
+    }
+
+    #[test]
+    fn exhausted_capacity_is_shed_without_queueing() {
+        let pool = Pool::from_config("api", &config(1));
+        let lease = pool.try_select().expect("first attempt should be admitted");
+
+        assert_eq!(
+            pool.try_select().unwrap_err(),
+            PoolSelectionError::Overloaded
+        );
+        assert_eq!(pool.snapshot().available_capacity, 0);
+
+        drop(lease);
+        assert!(pool.try_select().is_ok());
+    }
+
+    #[test]
+    fn all_unhealthy_endpoints_are_reported_distinctly() {
+        let pool = Pool::from_config("api", &config(8));
+        pool.endpoints()[0].record_health_result(false, 1, 1);
+
+        assert_eq!(
+            pool.try_select().unwrap_err(),
+            PoolSelectionError::NoHealthyEndpoint
+        );
+        assert_eq!(pool.snapshot().available_capacity, 8);
+    }
+}
