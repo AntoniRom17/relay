@@ -201,3 +201,135 @@ pub enum AuthError {
     #[error("authentication credential is invalid")]
     InvalidCredential,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use http::HeaderValue;
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair as _},
+    };
+
+    use super::*;
+
+    fn api_authenticator(secret: &str) -> Authenticator {
+        let digest = hex::encode(Sha256::digest(secret.as_bytes()));
+        Authenticator::from_config(&AuthenticationConfig {
+            api_key_sha256: vec![digest],
+            jwt_providers: BTreeMap::new(),
+        })
+        .expect("digest should compile")
+    }
+
+    #[test]
+    fn api_key_policy_accepts_only_matching_secret() {
+        let authenticator = api_authenticator("correct-horse-battery-staple");
+        let policy = AuthPolicyConfig::ApiKey {
+            header: "x-api-key".to_owned(),
+        };
+        let mut headers = HeaderMap::new();
+
+        assert_eq!(
+            authenticator.authenticate(&headers, &policy).unwrap_err(),
+            AuthError::MissingCredential
+        );
+        headers.insert("x-api-key", HeaderValue::from_static("wrong"));
+        assert_eq!(
+            authenticator.authenticate(&headers, &policy).unwrap_err(),
+            AuthError::InvalidCredential
+        );
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_static("correct-horse-battery-staple"),
+        );
+        let identity = authenticator
+            .authenticate(&headers, &policy)
+            .expect("matching key should authenticate");
+
+        assert_eq!(
+            identity.api_key_fingerprint.as_deref().map(str::len),
+            Some(8)
+        );
+        assert!(!format!("{authenticator:?}").contains("correct-horse"));
+    }
+
+    #[test]
+    fn jwt_policy_enforces_signature_issuer_audience_and_expiration() {
+        let random = SystemRandom::new();
+        let document =
+            Ed25519KeyPair::generate_pkcs8(&random).expect("Ed25519 key generation should work");
+        let key_pair = Ed25519KeyPair::from_pkcs8(document.as_ref()).expect("generated key");
+        let mut public_der = hex::decode("302a300506032b6570032100").expect("static DER prefix");
+        public_der.extend_from_slice(key_pair.public_key().as_ref());
+        let public_pem = format!(
+            "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+            STANDARD.encode(public_der)
+        );
+        let config = AuthenticationConfig {
+            api_key_sha256: Vec::new(),
+            jwt_providers: BTreeMap::from([(
+                "identity".to_owned(),
+                JwtProviderConfig {
+                    issuer: "https://issuer.example".to_owned(),
+                    audience: "relay-api".to_owned(),
+                    public_key: public_pem,
+                    algorithm: JwtAlgorithm::EdDSA,
+                },
+            )]),
+        };
+        let authenticator = Authenticator::from_config(&config).expect("provider should compile");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs();
+        let claims = serde_json::json!({
+            "sub": "user-42",
+            "iss": "https://issuer.example",
+            "aud": "relay-api",
+            "exp": now + 60,
+        });
+        let token = encode(
+            &Header::new(Algorithm::EdDSA),
+            &claims,
+            &EncodingKey::from_ed_der(document.as_ref()),
+        )
+        .expect("token should encode");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("valid header"),
+        );
+        let policy = AuthPolicyConfig::Jwt {
+            provider: "identity".to_owned(),
+        };
+
+        let identity = authenticator
+            .authenticate(&headers, &policy)
+            .expect("valid token should authenticate");
+        assert_eq!(identity.subject.as_deref(), Some("user-42"));
+
+        let wrong_claims = serde_json::json!({
+            "iss": "https://issuer.example",
+            "aud": "another-service",
+            "exp": now + 60,
+        });
+        let wrong_token = encode(
+            &Header::new(Algorithm::EdDSA),
+            &wrong_claims,
+            &EncodingKey::from_ed_der(document.as_ref()),
+        )
+        .expect("token should encode");
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {wrong_token}")).expect("valid header"),
+        );
+        assert_eq!(
+            authenticator.authenticate(&headers, &policy).unwrap_err(),
+            AuthError::InvalidCredential
+        );
+    }
+}
