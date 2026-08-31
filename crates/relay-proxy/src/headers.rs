@@ -65,3 +65,48 @@ fn remove_hop_by_hop(headers: &mut HeaderMap) {
 #[derive(Debug, Error)]
 #[error("generated forwarding header is invalid: {0}")]
 pub(crate) struct HeaderRewriteError(#[from] http::header::InvalidHeaderValue);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_nominated_and_standard_hop_headers_are_removed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("keep-alive, x-hop"),
+        );
+        headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+        headers.insert("x-hop", HeaderValue::from_static("private"));
+        headers.insert("x-end-to-end", HeaderValue::from_static("preserved"));
+
+        prepare_downstream_response(&mut headers);
+
+        assert!(!headers.contains_key(header::CONNECTION));
+        assert!(!headers.contains_key("keep-alive"));
+        assert!(!headers.contains_key("x-hop"));
+        assert_eq!(headers["x-end-to-end"], "preserved");
+        assert_eq!(headers[VIA], "1.1 relay");
+    }
+
+    #[test]
+    fn untrusted_forwarding_headers_are_replaced_at_the_edge() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("public.example"));
+        headers.insert(X_FORWARDED_FOR, HeaderValue::from_static("203.0.113.99"));
+
+        prepare_upstream_request(
+            &mut headers,
+            "127.0.0.1:9001",
+            "192.0.2.10".parse().expect("valid IP"),
+            "https",
+        )
+        .expect("generated values should be valid");
+
+        assert_eq!(headers[header::HOST], "127.0.0.1:9001");
+        assert_eq!(headers[X_FORWARDED_HOST], "public.example");
+        assert_eq!(headers[X_FORWARDED_FOR], "192.0.2.10");
+        assert_eq!(headers[X_FORWARDED_PROTO], "https");
+    }
+}

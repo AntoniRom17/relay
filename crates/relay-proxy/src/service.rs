@@ -360,3 +360,56 @@ fn gateway_error_response(error: &GatewayError, request_id: &str) -> Response<Pr
     );
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use http_body_util::BodyExt as _;
+
+    use super::*;
+
+    #[test]
+    fn upstream_uri_preserves_path_and_query_under_base_path() {
+        let endpoint: Url = "https://upstream.example:8443/base/"
+            .parse()
+            .expect("valid endpoint");
+        let original: Uri = "/v1/items?limit=10".parse().expect("valid request URI");
+
+        let rewritten = upstream_uri(&endpoint, &original).expect("valid upstream URI");
+
+        assert_eq!(
+            rewritten,
+            "https://upstream.example:8443/base/v1/items?limit=10"
+        );
+        assert_eq!(
+            upstream_authority(&endpoint).as_deref(),
+            Some("upstream.example:8443")
+        );
+    }
+
+    #[tokio::test]
+    async fn local_errors_are_stable_json_without_internal_details() {
+        let response = gateway_error_response(&GatewayError::UpstreamTransport, "request-123");
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("local body is infallible")
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("body should be JSON");
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(value["error"]["code"], "upstream_transport");
+        assert_eq!(value["error"]["request_id"], "request-123");
+        assert!(!String::from_utf8_lossy(&body).contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn only_uuid_request_ids_are_propagated() {
+        let valid = HeaderValue::from_static("67e55044-10b1-426f-9247-bb680e5fe0c8");
+        let invalid = HeaderValue::from_static("attacker-controlled-log-value");
+
+        assert_eq!(request_id(Some(&valid)), valid.to_str().expect("ASCII"));
+        assert!(Uuid::parse_str(&request_id(Some(&invalid))).is_ok());
+    }
+}
