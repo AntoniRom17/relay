@@ -82,6 +82,12 @@ pub fn validate(config: &GatewayConfig) -> Result<(), ConfigError> {
     if config.admin.enabled && listener_addresses.contains(&config.admin.address) {
         problems.push("admin.address: must not overlap a data-plane listener".to_owned());
     }
+    if config.admin.enabled && !config.admin.address.ip().is_loopback() {
+        problems.push(
+            "admin.address: must use a loopback address; place authenticated infrastructure in front for remote access"
+                .to_owned(),
+        );
+    }
 
     let mut route_names = HashSet::new();
     for (index, route) in config.routes.iter().enumerate() {
