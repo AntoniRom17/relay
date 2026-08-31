@@ -1,0 +1,40 @@
+# Minimal local development configuration.
+listeners:
+  - address: 127.0.0.1:8080
+    max_connections: 1000
+    request_timeout_ms: 30000
+    max_header_bytes: 32768
+
+admin:
+  enabled: true
+  address: 127.0.0.1:9090
+
+routes:
+  - name: local-api
+    path_prefix: /
+    upstream: local-api
+    max_body_bytes: 16777216
+    concurrency_limit: 512
+
+upstreams:
+  local-api:
+    load_balancing: round_robin
+    connect_timeout_ms: 3000
+    concurrency_limit: 1024
+    endpoints:
+      - url: http://127.0.0.1:9001
+    health_check:
+      path: /health
+      interval_ms: 5000
+      timeout_ms: 1000
+      expected_status_min: 200
+      expected_status_max: 299
+      healthy_threshold: 2
+      unhealthy_threshold: 3
+
+authentication: {}
+observability:
+  log_filter: relay=info
+  json_logs: false
+redis: null
+shutdown_grace_ms: 30000
