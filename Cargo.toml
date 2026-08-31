@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
+default-members = ["crates/relay-cli"]
 members = [
+  "crates/relay-cli",
   "crates/relay-config",
   "crates/relay-core",
   "crates/relay-observability",
