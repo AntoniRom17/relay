@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 relay-config = { path = "../relay-config" }
+relay-control = { path = "../relay-control" }
 relay-core = { path = "../relay-core" }
 relay-observability = { path = "../relay-observability" }
 relay-proxy = { path = "../relay-proxy" }
@@ -25,4 +26,3 @@ tracing.workspace = true
 
 [lints]
 workspace = true
-

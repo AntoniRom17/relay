@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use relay_config::{GatewayConfig, load_from_path};
+use relay_control::ControlPlane;
 use relay_core::Shutdown;
 use relay_observability::{Metrics, init_logging};
 use relay_proxy::{ProxyService, RuntimeState, serve_http};
@@ -117,7 +118,7 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
         .map(|upstream| upstream.connect_timeout_ms)
         .min()
         .map_or(Duration::from_secs(3), Duration::from_millis);
-    let mut listeners = JoinSet::new();
+    let mut servers = JoinSet::new();
 
     for listener in config.listeners.clone() {
         let proxy = ProxyService::new(
@@ -126,12 +127,24 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
             Duration::from_millis(listener.request_timeout_ms),
             connect_timeout,
         );
-        listeners.spawn(serve_http(
-            listener,
-            proxy,
-            metrics.clone(),
-            shutdown.clone(),
-        ));
+        let metrics = metrics.clone();
+        let shutdown = shutdown.clone();
+        servers.spawn(async move {
+            serve_http(listener, proxy, metrics, shutdown)
+                .await
+                .map_err(anyhow::Error::from)
+        });
+    }
+    if config.admin.enabled {
+        let control = ControlPlane::new(Arc::clone(&runtime), metrics.clone());
+        let address = config.admin.address;
+        let shutdown = shutdown.clone();
+        servers.spawn(async move {
+            control
+                .serve(address, shutdown)
+                .await
+                .map_err(anyhow::Error::from)
+        });
     }
 
     info!(config = %path.display(), "Relay started");
@@ -140,21 +153,21 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
             signal?;
             info!("shutdown signal received");
         }
-        result = listeners.join_next() => {
+        result = servers.join_next() => {
             match result {
-                Some(Ok(Ok(()))) => bail!("data-plane listener stopped unexpectedly"),
-                Some(Ok(Err(error))) => return Err(error).context("data-plane listener failed"),
-                Some(Err(error)) => return Err(error).context("data-plane listener task failed"),
-                None => bail!("no data-plane listeners are running"),
+                Some(Ok(Ok(()))) => bail!("gateway server stopped unexpectedly"),
+                Some(Ok(Err(error))) => return Err(error).context("gateway server failed"),
+                Some(Err(error)) => return Err(error).context("gateway server task failed"),
+                None => bail!("no gateway servers are running"),
             }
         }
     }
     shutdown.cancel();
-    while let Some(result) = listeners.join_next().await {
+    while let Some(result) = servers.join_next().await {
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => error!(%error, "listener failed during shutdown"),
-            Err(error) => error!(%error, "listener task failed during shutdown"),
+            Ok(Err(error)) => error!(%error, "server failed during shutdown"),
+            Err(error) => error!(%error, "server task failed during shutdown"),
         }
     }
     info!("Relay stopped cleanly");
