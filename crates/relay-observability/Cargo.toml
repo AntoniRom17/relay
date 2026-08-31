@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+prometheus.workspace = true
 relay-config = { path = "../relay-config" }
 thiserror.workspace = true
 tracing.workspace = true
@@ -16,4 +17,3 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
-

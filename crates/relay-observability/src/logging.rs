@@ -8,9 +8,9 @@ pub enum LoggingError {
     /// The configured filter expression is invalid.
     #[error("invalid observability.log_filter: {0}")]
     Filter(#[from] tracing_subscriber::filter::ParseError),
-    /// Another global subscriber has already been installed.
+    /// The subscriber could not be installed, usually because one is already active.
     #[error("failed to install tracing subscriber: {0}")]
-    Subscriber(#[from] tracing::subscriber::SetGlobalDefaultError),
+    Subscriber(#[from] tracing_subscriber::util::TryInitError),
 }
 
 /// Installs Relay's process-wide structured tracing subscriber.
