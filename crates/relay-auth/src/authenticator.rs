@@ -88,6 +88,7 @@ impl Authenticator {
             subject: None,
             api_key_fingerprint: fingerprint,
             claims: None,
+            credential_hash: Some(digest),
         })
     }
 
@@ -119,6 +120,7 @@ impl Authenticator {
             subject,
             api_key_fingerprint: None,
             claims: Some(data.claims),
+            credential_hash: None,
         })
     }
 }
@@ -159,7 +161,7 @@ fn compile_provider(
 }
 
 /// Identity attributes safe to attach to request context and spans.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthIdentity {
     /// JWT subject, when present.
     pub subject: Option<String>,
@@ -167,6 +169,25 @@ pub struct AuthIdentity {
     pub api_key_fingerprint: Option<String>,
     /// Validated JWT claims for downstream policy use.
     pub claims: Option<Value>,
+    credential_hash: Option<[u8; 32]>,
+}
+
+impl AuthIdentity {
+    /// Returns a non-reversible full-entropy key for internal policy partitioning.
+    pub fn rate_limit_key(&self) -> Option<String> {
+        self.credential_hash.map(hex::encode)
+    }
+}
+
+impl std::fmt::Debug for AuthIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthIdentity")
+            .field("subject", &self.subject)
+            .field("api_key_fingerprint", &self.api_key_fingerprint)
+            .field("claims_present", &self.claims.is_some())
+            .finish()
+    }
 }
 
 /// Authentication material could not be compiled.
