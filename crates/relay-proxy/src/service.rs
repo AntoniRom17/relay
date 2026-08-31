@@ -17,6 +17,7 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
+use relay_config::AuthPolicyConfig;
 use relay_core::GatewayError;
 use relay_observability::Metrics;
 use relay_upstream::{PoolSelectionError, UpstreamLease};
@@ -113,6 +114,7 @@ impl ProxyService {
             upstream = tracing::field::Empty,
             status = tracing::field::Empty,
             latency_ms = tracing::field::Empty,
+            identity = tracing::field::Empty,
         );
 
         async move {
@@ -153,6 +155,19 @@ impl ProxyService {
         let plan = self.runtime.plan(&request)?;
         let request_method = request.method().as_str().to_owned();
         tracing::Span::current().record("route", plan.route.name.as_str());
+        if let Some(policy) = &plan.route.authentication {
+            let identity = self
+                .runtime
+                .authenticator()
+                .authenticate(request.headers(), policy)
+                .map_err(|_| GatewayError::Unauthorized)?;
+            if let Some(subject) = identity.subject.as_deref() {
+                tracing::Span::current().record("identity", subject);
+            } else if let Some(fingerprint) = identity.api_key_fingerprint.as_deref() {
+                tracing::Span::current().record("identity", fingerprint);
+            }
+            remove_consumed_credential(request.headers_mut(), policy);
+        }
         let circuit_permit = plan
             .circuit
             .try_acquire()
@@ -316,6 +331,17 @@ fn request_id(value: Option<&HeaderValue>) -> String {
         .and_then(|value| Uuid::parse_str(value).ok())
         .unwrap_or_else(Uuid::new_v4)
         .to_string()
+}
+
+fn remove_consumed_credential(headers: &mut http::HeaderMap, policy: &AuthPolicyConfig) {
+    match policy {
+        AuthPolicyConfig::ApiKey { header } => {
+            headers.remove(header);
+        }
+        AuthPolicyConfig::Jwt { .. } => {
+            headers.remove(header::AUTHORIZATION);
+        }
+    }
 }
 
 fn upstream_uri(endpoint: &Url, original: &Uri) -> Result<Uri, http::uri::InvalidUri> {

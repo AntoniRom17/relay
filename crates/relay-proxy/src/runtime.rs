@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use http::Request;
+use relay_auth::{AuthBuildError, Authenticator};
 use relay_config::{GatewayConfig, RouteConfig};
 use relay_core::GatewayError;
 use relay_routing::{RouteBuildError, RouteTable};
@@ -16,6 +17,7 @@ pub struct RuntimeState {
     pools: BTreeMap<String, Arc<Pool>>,
     circuits: BTreeMap<String, CircuitBreaker>,
     route_concurrency: BTreeMap<String, Arc<Semaphore>>,
+    authenticator: Authenticator,
 }
 
 impl RuntimeState {
@@ -47,6 +49,7 @@ impl RuntimeState {
                 )
             })
             .collect();
+        let authenticator = Authenticator::from_config(&config.authentication)?;
 
         Ok(Self {
             config: Arc::new(config),
@@ -54,6 +57,7 @@ impl RuntimeState {
             pools,
             circuits,
             route_concurrency,
+            authenticator,
         })
     }
 
@@ -103,6 +107,11 @@ impl RuntimeState {
     pub fn pools(&self) -> impl ExactSizeIterator<Item = (&str, &Arc<Pool>)> {
         self.pools.iter().map(|(name, pool)| (name.as_str(), pool))
     }
+
+    /// Returns compiled authentication material.
+    pub fn authenticator(&self) -> &Authenticator {
+        &self.authenticator
+    }
 }
 
 /// Request-scoped policy state retained until the response path completes.
@@ -123,4 +132,7 @@ pub enum RuntimeBuildError {
     /// Route definitions could not be compiled.
     #[error(transparent)]
     Routes(#[from] RouteBuildError),
+    /// Authentication keys or providers could not be compiled.
+    #[error(transparent)]
+    Authentication(#[from] AuthBuildError),
 }

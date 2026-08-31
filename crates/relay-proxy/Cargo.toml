@@ -17,6 +17,7 @@ hyper.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
 relay-config = { path = "../relay-config" }
+relay-auth = { path = "../relay-auth" }
 relay-core = { path = "../relay-core" }
 relay-observability = { path = "../relay-observability" }
 relay-routing = { path = "../relay-routing" }
