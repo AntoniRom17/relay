@@ -11,9 +11,9 @@ repository.workspace = true
 [dependencies]
 dashmap.workspace = true
 relay-config = { path = "../relay-config" }
+redis.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
 [lints]
 workspace = true
-

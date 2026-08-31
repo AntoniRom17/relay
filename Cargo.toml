@@ -46,7 +46,7 @@ jsonwebtoken = "9.3"
 prometheus = "0.14"
 proptest = "1.7"
 rand = "0.8"
-redis = { version = "0.32", features = ["aio", "connection-manager", "tokio-comp"], default-features = false }
+redis = { version = "0.32", features = ["aio", "connection-manager", "script", "tokio-comp"], default-features = false }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
 rustls-pemfile = "2.2"
