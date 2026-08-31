@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use relay_config::{GatewayConfig, load_from_path};
 use relay_control::ControlPlane;
 use relay_core::Shutdown;
+use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::{Metrics, init_logging};
 use relay_proxy::{ProxyService, RuntimeState, serve_http};
 use tokio::task::JoinSet;
@@ -112,6 +113,25 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     let metrics = Metrics::new().context("failed to create metrics registry")?;
     let shutdown = Shutdown::new(Duration::from_millis(config.shutdown_grace_ms));
     let runtime = Arc::new(RuntimeState::build(config.clone())?);
+    let local_limiter = Arc::new(LocalRateLimiter::new(100_000));
+    let redis_limiter = if config
+        .routes
+        .iter()
+        .filter_map(|route| route.rate_limit.as_ref())
+        .any(|limit| limit.distributed)
+    {
+        let redis = config
+            .redis
+            .as_ref()
+            .context("distributed rate limiting requires Redis configuration")?;
+        Some(
+            RedisRateLimiter::connect(&redis.url, redis.key_prefix.clone())
+                .await
+                .context("failed to connect distributed rate limiter")?,
+        )
+    } else {
+        None
+    };
     let connect_timeout = config
         .upstreams
         .values()
@@ -126,6 +146,8 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
             metrics.clone(),
             Duration::from_millis(listener.request_timeout_ms),
             connect_timeout,
+            Arc::clone(&local_limiter),
+            redis_limiter.clone(),
         );
         let metrics = metrics.clone();
         let shutdown = shutdown.clone();

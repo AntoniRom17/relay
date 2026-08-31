@@ -18,6 +18,7 @@ clap.workspace = true
 relay-config = { path = "../relay-config" }
 relay-control = { path = "../relay-control" }
 relay-core = { path = "../relay-core" }
+relay-limits = { path = "../relay-limits" }
 relay-observability = { path = "../relay-observability" }
 relay-proxy = { path = "../relay-proxy" }
 serde_yaml.workspace = true

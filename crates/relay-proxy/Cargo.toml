@@ -20,6 +20,7 @@ relay-config = { path = "../relay-config" }
 relay-auth = { path = "../relay-auth" }
 relay-core = { path = "../relay-core" }
 relay-observability = { path = "../relay-observability" }
+relay-limits = { path = "../relay-limits" }
 relay-routing = { path = "../relay-routing" }
 relay-upstream = { path = "../relay-upstream" }
 rustls.workspace = true

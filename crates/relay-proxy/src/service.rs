@@ -17,8 +17,9 @@ use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
-use relay_config::AuthPolicyConfig;
+use relay_config::{AuthPolicyConfig, RateLimitConfig, RateLimitKey};
 use relay_core::GatewayError;
+use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::Metrics;
 use relay_upstream::{PoolSelectionError, UpstreamLease};
 use serde_json::json;
@@ -49,6 +50,8 @@ pub struct ProxyService {
     client: HttpsClient,
     metrics: Metrics,
     request_timeout: Duration,
+    local_limiter: Arc<LocalRateLimiter>,
+    redis_limiter: Option<RedisRateLimiter>,
 }
 
 impl ProxyService {
@@ -58,6 +61,8 @@ impl ProxyService {
         metrics: Metrics,
         request_timeout: Duration,
         connect_timeout: Duration,
+        local_limiter: Arc<LocalRateLimiter>,
+        redis_limiter: Option<RedisRateLimiter>,
     ) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let mut connector = HttpConnector::new();
@@ -78,6 +83,8 @@ impl ProxyService {
             client,
             metrics,
             request_timeout,
+            local_limiter,
+            redis_limiter,
         }
     }
 
@@ -155,6 +162,7 @@ impl ProxyService {
         let plan = self.runtime.plan(&request)?;
         let request_method = request.method().as_str().to_owned();
         tracing::Span::current().record("route", plan.route.name.as_str());
+        let mut api_key_limit_key = None;
         if let Some(policy) = &plan.route.authentication {
             let identity = self
                 .runtime
@@ -166,7 +174,17 @@ impl ProxyService {
             } else if let Some(fingerprint) = identity.api_key_fingerprint.as_deref() {
                 tracing::Span::current().record("identity", fingerprint);
             }
+            api_key_limit_key = identity.rate_limit_key();
             remove_consumed_credential(request.headers_mut(), policy);
+        }
+        if let Some(limit) = &plan.route.rate_limit {
+            self.enforce_rate_limit(
+                &plan.route.name,
+                limit,
+                client_ip,
+                api_key_limit_key.as_deref(),
+            )
+            .await?;
         }
         let circuit_permit = plan
             .circuit
@@ -242,6 +260,44 @@ impl ProxyService {
         .map_err(|error| -> BoxError { Box::new(error) })
         .boxed_unsync();
         Ok(Response::from_parts(parts, body))
+    }
+
+    async fn enforce_rate_limit(
+        &self,
+        route: &str,
+        config: &RateLimitConfig,
+        client_ip: IpAddr,
+        api_key: Option<&str>,
+    ) -> Result<(), GatewayError> {
+        let (scope, identity) = match config.key {
+            RateLimitKey::Route => ("route", "global".to_owned()),
+            RateLimitKey::ClientIp => ("client_ip", client_ip.to_string()),
+            RateLimitKey::ApiKey => (
+                "api_key",
+                api_key.ok_or(GatewayError::Unauthorized)?.to_owned(),
+            ),
+        };
+        let decision = if config.distributed {
+            self.redis_limiter
+                .as_ref()
+                .ok_or(GatewayError::DependencyUnavailable)?
+                .check(route, &identity, config)
+                .await
+                .map_err(|error| {
+                    warn!(%error, "distributed rate limiter unavailable");
+                    GatewayError::DependencyUnavailable
+                })?
+        } else {
+            self.local_limiter
+                .check(format!("{route}:{identity}"), config)
+                .map_err(|_| GatewayError::Overloaded)?
+        };
+        if decision.allowed {
+            Ok(())
+        } else {
+            self.metrics.rate_limited(route, scope);
+            Err(GatewayError::RateLimited)
+        }
     }
 }
 
