@@ -616,4 +616,51 @@ mod tests {
         assert_eq!(request_id(Some(&valid)), valid.to_str().expect("ASCII"));
         assert!(Uuid::parse_str(&request_id(Some(&invalid))).is_ok());
     }
+
+    #[test]
+    fn retries_require_both_idempotent_method_and_empty_body() {
+        let get = Request::get("/")
+            .body(Empty::<Bytes>::new())
+            .expect("request");
+        let put = Request::put("/")
+            .body(Empty::<Bytes>::new())
+            .expect("request");
+        let post = Request::post("/")
+            .body(Empty::<Bytes>::new())
+            .expect("request");
+        let get_with_body = Request::get("/")
+            .body(Full::new(Bytes::from_static(b"payload")))
+            .expect("request");
+
+        assert!(is_replayable(&get));
+        assert!(is_replayable(&put));
+        assert!(!is_replayable(&post));
+        assert!(!is_replayable(&get_with_body));
+    }
+
+    #[test]
+    fn retry_backoff_is_exponential_capped_and_jittered() {
+        let config = RetryConfig {
+            max_attempts: 5,
+            base_backoff_ms: 100,
+            max_backoff_ms: 250,
+            statuses: vec![503],
+        };
+
+        let first = retry_delay(&config, 1);
+        let second = retry_delay(&config, 2);
+        let capped = retry_delay(&config, 8);
+
+        assert!((100..=150).contains(&first.as_millis()));
+        assert!((200..=300).contains(&second.as_millis()));
+        assert!((250..=375).contains(&capped.as_millis()));
+    }
+
+    #[test]
+    fn rate_limit_errors_include_retry_guidance() {
+        let response = gateway_error_response(&GatewayError::RateLimited, "request-123");
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    }
 }
