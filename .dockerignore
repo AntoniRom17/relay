@@ -1,0 +1,10 @@
+.git
+.github
+**/target
+fuzz/corpus
+fuzz/artifacts
+.env*
+*.pem
+*.key
+coverage
+docs
