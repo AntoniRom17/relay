@@ -1,0 +1,33 @@
+[Unit]
+Description=Relay API gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+ExecStartPre=/usr/local/bin/relay validate --config /etc/relay/relay.yaml
+ExecStart=/usr/local/bin/relay run --config /etc/relay/relay.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=35s
+LimitNOFILE=131072
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/relay
+
+[Install]
+WantedBy=multi-user.target
