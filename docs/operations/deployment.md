@@ -13,7 +13,8 @@ relay validate --config /etc/relay/relay.yaml
 ```
 
 The release binary is `target/release/relay`. The multi-stage `Dockerfile` pins the Rust toolchain,
-uses the lockfile, copies CA roots, sets UID/GID 10001, and wraps the process with `dumb-init`.
+uses the lockfile, copies CA roots, sets UID/GID 10001, and wraps the process with `dumb-init`. Its
+build context excludes Git state, local build products, documentation, and secret-like file types.
 Build by digest-pinned base images in a release pipeline when supply-chain policy requires it.
 
 ## Linux service

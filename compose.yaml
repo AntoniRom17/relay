@@ -12,9 +12,12 @@ services:
       - "8080:8080"
       - "127.0.0.1:9090:9090"
     depends_on:
-      - app-a
-      - app-b
-      - redis
+      app-a:
+        condition: service_started
+      app-b:
+        condition: service_started
+      redis:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
@@ -51,6 +54,12 @@ services:
     tmpfs: [/data]
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+      start_period: 2s
 
   prometheus:
     image: prom/prometheus:v3.5.0
