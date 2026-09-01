@@ -136,6 +136,18 @@ impl RuntimeState {
         self.pools.iter().map(|(name, pool)| (name.as_str(), pool))
     }
 
+    /// Returns a configured pool circuit breaker by name.
+    pub fn circuit(&self, name: &str) -> Option<&CircuitBreaker> {
+        self.circuits.get(name)
+    }
+
+    /// Iterates through configured pool circuit breakers.
+    pub fn circuits(&self) -> impl ExactSizeIterator<Item = (&str, &CircuitBreaker)> {
+        self.circuits
+            .iter()
+            .map(|(name, circuit)| (name.as_str(), circuit))
+    }
+
     /// Returns compiled authentication material.
     pub fn authenticator(&self) -> &Authenticator {
         &self.authenticator

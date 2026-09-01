@@ -155,7 +155,12 @@ async fn upstreams(State(state): State<Arc<ControlState>>) -> impl IntoResponse 
     Json(
         runtime
             .pools()
-            .map(|(_, pool)| UpstreamView::from_pool(pool))
+            .filter_map(|(name, pool)| {
+                Some(UpstreamView::from_pool(
+                    pool,
+                    runtime.circuit(name)?.snapshot(),
+                ))
+            })
             .collect::<Vec<_>>(),
     )
 }
@@ -170,7 +175,18 @@ async fn upstream(Path(id): Path<String>, State(state): State<Arc<ControlState>>
             )
                 .into_response()
         },
-        |pool| Json(UpstreamView::from_pool(pool)).into_response(),
+        |pool| {
+            runtime.circuit(&id).map_or_else(
+                || {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "circuit_state_unavailable" })),
+                    )
+                        .into_response()
+                },
+                |circuit| Json(UpstreamView::from_pool(pool, circuit.snapshot())).into_response(),
+            )
+        },
     )
 }
 
@@ -221,15 +237,23 @@ struct RouteView {
 struct UpstreamView {
     name: String,
     available_capacity: usize,
+    circuit_state: &'static str,
+    consecutive_failures: u32,
     endpoints: Vec<EndpointView>,
 }
 
 impl UpstreamView {
-    fn from_pool(pool: &relay_upstream::Pool) -> Self {
+    fn from_pool(pool: &relay_upstream::Pool, circuit: relay_upstream::BreakerSnapshot) -> Self {
         let snapshot = pool.snapshot();
         Self {
             name: snapshot.name,
             available_capacity: snapshot.available_capacity,
+            circuit_state: match circuit.state {
+                relay_upstream::CircuitState::Closed => "closed",
+                relay_upstream::CircuitState::Open => "open",
+                relay_upstream::CircuitState::HalfOpen => "half_open",
+            },
+            consecutive_failures: circuit.consecutive_failures,
             endpoints: snapshot
                 .endpoints
                 .into_iter()

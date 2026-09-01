@@ -373,6 +373,9 @@ async fn supervise_health_checks(
                         metrics.set_upstream_health(name, endpoint.url().as_str(), endpoint.is_healthy());
                     }
                 }
+                for (name, circuit) in active.circuits() {
+                    metrics.set_circuit_state(name, circuit.snapshot().state.metric_value());
+                }
                 let candidate = runtime.load();
                 if !Arc::ptr_eq(&active, &candidate) {
                     generation_token.cancel();
