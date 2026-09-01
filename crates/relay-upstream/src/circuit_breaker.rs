@@ -72,6 +72,11 @@ impl CircuitBreaker {
         match &mut *state {
             State::Closed { .. } => {}
             State::Open { .. } => return Err(CircuitOpen),
+            State::HalfOpen { successes, .. }
+                if *successes >= self.inner.config.success_threshold =>
+            {
+                return Err(CircuitOpen);
+            }
             State::HalfOpen { in_flight, .. }
                 if *in_flight >= self.inner.config.half_open_probe_limit =>
             {
@@ -129,7 +134,7 @@ impl CircuitBreaker {
             } => {
                 *in_flight = in_flight.saturating_sub(1);
                 *successes = successes.saturating_add(1);
-                if *successes >= self.inner.config.success_threshold {
+                if *successes >= self.inner.config.success_threshold && *in_flight == 0 {
                     *state = State::Closed {
                         consecutive_failures: 0,
                     };
@@ -292,5 +297,26 @@ mod tests {
         drop(breaker.try_acquire().expect("closed circuit"));
 
         assert_eq!(breaker.snapshot().consecutive_failures, 1);
+    }
+
+    #[test]
+    fn an_outstanding_failed_probe_prevents_premature_close() {
+        let breaker = CircuitBreaker::new(&CircuitBreakerConfig {
+            failure_threshold: 1,
+            recovery_timeout_ms: 5,
+            half_open_probe_limit: 2,
+            success_threshold: 1,
+        });
+        breaker.try_acquire().expect("closed circuit").failure();
+        thread::sleep(Duration::from_millis(10));
+        let successful = breaker.try_acquire().expect("first recovery probe");
+        let failed = breaker.try_acquire().expect("second recovery probe");
+
+        successful.success();
+        assert_eq!(breaker.snapshot().state, CircuitState::HalfOpen);
+        assert_eq!(breaker.try_acquire().unwrap_err(), CircuitOpen);
+        failed.failure();
+
+        assert_eq!(breaker.snapshot().state, CircuitState::Open);
     }
 }

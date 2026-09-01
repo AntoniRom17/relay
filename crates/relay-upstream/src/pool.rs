@@ -14,6 +14,7 @@ pub struct Pool {
     endpoints: Arc<[Arc<Endpoint>]>,
     balancer: Arc<dyn LoadBalancer>,
     concurrency: Arc<Semaphore>,
+    passive_unhealthy_threshold: Option<u32>,
 }
 
 impl Pool {
@@ -37,6 +38,10 @@ impl Pool {
             endpoints,
             balancer,
             concurrency: Arc::new(Semaphore::new(config.concurrency_limit)),
+            passive_unhealthy_threshold: config
+                .health_check
+                .as_ref()
+                .map(|health| health.unhealthy_threshold),
         }
     }
 
@@ -68,6 +73,13 @@ impl Pool {
             endpoint,
             _pool_permit: permit,
         })
+    }
+
+    /// Records a request-path failure when active checks can later recover the endpoint.
+    pub fn record_passive_failure(&self, endpoint: &Endpoint) {
+        if let Some(threshold) = self.passive_unhealthy_threshold {
+            endpoint.record_passive_failure(threshold);
+        }
     }
 
     /// Returns a point-in-time snapshot suitable for administration APIs.
@@ -191,5 +203,28 @@ mod tests {
             PoolSelectionError::NoHealthyEndpoint
         );
         assert_eq!(pool.snapshot().available_capacity, 8);
+    }
+
+    #[test]
+    fn passive_ejection_requires_an_active_recovery_policy() {
+        let without_checks = Pool::from_config("api", &config(8));
+        without_checks.record_passive_failure(&without_checks.endpoints()[0]);
+        assert!(without_checks.endpoints()[0].is_healthy());
+
+        let mut with_checks_config = config(8);
+        with_checks_config.health_check = Some(relay_config::HealthCheckConfig {
+            path: "/health".to_owned(),
+            interval_ms: 100,
+            timeout_ms: 50,
+            expected_status_min: 200,
+            expected_status_max: 299,
+            healthy_threshold: 1,
+            unhealthy_threshold: 2,
+        });
+        let with_checks = Pool::from_config("api", &with_checks_config);
+        with_checks.record_passive_failure(&with_checks.endpoints()[0]);
+        assert!(with_checks.endpoints()[0].is_healthy());
+        with_checks.record_passive_failure(&with_checks.endpoints()[0]);
+        assert!(!with_checks.endpoints()[0].is_healthy());
     }
 }

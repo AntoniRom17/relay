@@ -281,7 +281,7 @@ impl ProxyService {
                     Ok(Ok(response)) => response,
                     Ok(Err(error)) => {
                         circuit_permit.failure();
-                        endpoint.record_passive_failure(3);
+                        plan.pool.record_passive_failure(endpoint);
                         if error_chain_contains_length_limit(&error) {
                             return Err(GatewayError::RequestTooLarge);
                         }
@@ -300,7 +300,7 @@ impl ProxyService {
                     }
                     Err(_) => {
                         circuit_permit.failure();
-                        endpoint.record_passive_failure(3);
+                        plan.pool.record_passive_failure(endpoint);
                         self.metrics
                             .upstream_failure(plan.pool.name(), &endpoint_name, "timeout");
                         warn!(attempt, "upstream request timed out");
@@ -321,7 +321,12 @@ impl ProxyService {
             );
             let retryable_status = plan.route.retry.statuses.contains(&status.as_u16());
             if retryable_status && attempt < max_attempts {
-                circuit_permit.failure();
+                if status.is_server_error() {
+                    plan.pool.record_passive_failure(endpoint);
+                    circuit_permit.failure();
+                } else {
+                    circuit_permit.success();
+                }
                 self.metrics.retry(&plan.route.name, "status");
                 drop(response);
                 drop(upstream);
@@ -329,6 +334,7 @@ impl ProxyService {
                 continue;
             }
             if status.is_server_error() {
+                plan.pool.record_passive_failure(endpoint);
                 circuit_permit.failure();
             } else {
                 circuit_permit.success();
