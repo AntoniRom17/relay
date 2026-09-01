@@ -3,6 +3,7 @@ resolver = "2"
 default-members = ["crates/relay-cli"]
 members = [
   "crates/relay-auth",
+  "crates/relay-cache",
   "crates/relay-cli",
   "crates/relay-config",
   "crates/relay-control",
