@@ -24,12 +24,14 @@ relay-core = { path = "../relay-core" }
 relay-observability = { path = "../relay-observability" }
 relay-limits = { path = "../relay-limits" }
 relay-routing = { path = "../relay-routing" }
+relay-tls = { path = "../relay-tls" }
 relay-upstream = { path = "../relay-upstream" }
 rand.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 url.workspace = true

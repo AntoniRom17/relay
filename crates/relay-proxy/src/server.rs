@@ -8,6 +8,7 @@ use hyper_util::{
 use relay_config::ListenerConfig;
 use relay_core::Shutdown;
 use relay_observability::Metrics;
+use relay_tls::ReloadingTlsAcceptor;
 use thiserror::Error;
 use tokio::{net::TcpListener, task::JoinSet};
 use tracing::{debug, info, warn};
@@ -20,6 +21,27 @@ pub async fn serve_http(
     proxy: ProxyService,
     metrics: Metrics,
     shutdown: Shutdown,
+) -> Result<(), ServeError> {
+    serve(config, proxy, metrics, shutdown, None).await
+}
+
+/// Serves one rustls HTTP listener until coordinated shutdown completes.
+pub async fn serve_tls(
+    config: ListenerConfig,
+    proxy: ProxyService,
+    metrics: Metrics,
+    shutdown: Shutdown,
+    acceptor: ReloadingTlsAcceptor,
+) -> Result<(), ServeError> {
+    serve(config, proxy, metrics, shutdown, Some(acceptor)).await
+}
+
+async fn serve(
+    config: ListenerConfig,
+    proxy: ProxyService,
+    metrics: Metrics,
+    shutdown: Shutdown,
+    tls: Option<ReloadingTlsAcceptor>,
 ) -> Result<(), ServeError> {
     let listener = TcpListener::bind(config.address)
         .await
@@ -44,31 +66,21 @@ pub async fn serve_http(
                 let proxy = proxy.clone();
                 let metrics = metrics.clone();
                 let connection_shutdown = shutdown.child_token();
+                let tls = tls.clone();
                 connections.spawn(async move {
                     let _permit = permit;
                     let _metric = ConnectionMetricGuard::new(metrics);
-                    let service = service_fn(move |request| {
-                        let proxy = proxy.clone();
-                        async move {
-                            Ok::<_, Infallible>(proxy.handle(request, peer.ip(), "http").await)
-                        }
-                    });
-                    let io = TokioIo::new(stream);
-                    let builder = auto::Builder::new(TokioExecutor::new());
-                    let connection = builder.serve_connection_with_upgrades(io, service);
-                    tokio::pin!(connection);
-                    tokio::select! {
-                        result = &mut connection => {
-                            if let Err(error) = result {
-                                debug!(peer = %peer, %error, "client connection ended with an error");
+                    if let Some(acceptor) = tls {
+                        match acceptor.accept(stream).await {
+                            Ok(stream) => {
+                                run_connection(stream, proxy, peer, "https", connection_shutdown).await;
+                            }
+                            Err(error) => {
+                                debug!(peer = %peer, %error, "TLS handshake failed");
                             }
                         }
-                        () = connection_shutdown.cancelled() => {
-                            connection.as_mut().graceful_shutdown();
-                            if let Err(error) = connection.await {
-                                debug!(peer = %peer, %error, "connection drain ended with an error");
-                            }
-                        }
+                    } else {
+                        run_connection(stream, proxy, peer, "http", connection_shutdown).await;
                     }
                 });
             }
@@ -92,6 +104,38 @@ pub async fn serve_http(
     }
     info!(address = %config.address, "data-plane listener stopped");
     Ok(())
+}
+
+async fn run_connection<IO>(
+    stream: IO,
+    proxy: ProxyService,
+    peer: std::net::SocketAddr,
+    protocol: &'static str,
+    shutdown: tokio_util::sync::CancellationToken,
+) where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = service_fn(move |request| {
+        let proxy = proxy.clone();
+        async move { Ok::<_, Infallible>(proxy.handle(request, peer.ip(), protocol).await) }
+    });
+    let io = TokioIo::new(stream);
+    let builder = auto::Builder::new(TokioExecutor::new());
+    let connection = builder.serve_connection_with_upgrades(io, service);
+    tokio::pin!(connection);
+    tokio::select! {
+        result = &mut connection => {
+            if let Err(error) = result {
+                debug!(peer = %peer, %error, "client connection ended with an error");
+            }
+        }
+        () = shutdown.cancelled() => {
+            connection.as_mut().graceful_shutdown();
+            if let Err(error) = connection.await {
+                debug!(peer = %peer, %error, "connection drain ended with an error");
+            }
+        }
+    }
 }
 
 struct ConnectionMetricGuard(Metrics);
