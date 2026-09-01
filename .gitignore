@@ -1,13 +1,28 @@
-/target/
-/.idea/
-/.vscode/
-*.profraw
-*.log
+# Cargo build and benchmark output
+**/target/
+
+# Fuzzing corpora and crash artifacts
+/fuzz/artifacts/
+/fuzz/corpus/
+
+# Local secrets and environment overrides
 .env
 .env.*
 !.env.example
-coverage/
-flamegraph.svg
-perf.data*
-docker/.grafana/
+*.pem
+*.key
+*.p12
 
+# Coverage, profiles, and logs
+/coverage/
+*.profraw
+*.profdata
+*.flamegraph.svg
+*.log
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
