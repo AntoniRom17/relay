@@ -250,3 +250,28 @@ async fn retryable_failures_move_to_the_next_pool_endpoint() {
     failed_task.abort();
     healthy_task.abort();
 }
+
+#[tokio::test]
+async fn route_body_limits_reject_before_contacting_the_upstream() {
+    let (upstream_address, upstream, upstream_task) = spawn_upstream("unused", false).await;
+    let relay = RunningRelay::start(&[upstream_address], false, 1).await;
+    let request = Request::post(format!("http://{}/upload", relay.address))
+        .body(Full::new(Bytes::from(vec![b'x'; 1025])))
+        .expect("request");
+
+    let response = client().request(request).await.expect("proxy response");
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("error body")
+        .to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+
+    assert_eq!(payload["error"]["code"], "request_too_large");
+    assert_eq!(upstream.requests.load(Ordering::Acquire), 0);
+
+    relay.stop().await;
+    upstream_task.abort();
+}
