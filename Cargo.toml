@@ -46,6 +46,9 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "tokio"] }
 jsonwebtoken = "9.3"
 prometheus = "0.14"
+opentelemetry = "0.30"
+opentelemetry-otlp = { version = "0.30", default-features = false, features = ["grpc-tonic", "trace"] }
+opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
 proptest = "1.7"
 rand = "0.8"
 redis = { version = "0.32", features = ["aio", "connection-manager", "script", "tokio-comp"], default-features = false }

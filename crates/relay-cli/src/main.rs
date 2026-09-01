@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run(path: PathBuf) -> anyhow::Result<()> {
     let config = load_from_path(&path)
         .with_context(|| format!("unable to start from {}", path.display()))?;
-    init_logging(&config.observability)?;
+    let _telemetry = init_logging(&config.observability)?;
     let metrics = Metrics::new().context("failed to create metrics registry")?;
     let shutdown = Shutdown::new(Duration::from_millis(config.shutdown_grace_ms));
     let runtime = Arc::new(RuntimeStore::new(RuntimeState::build(config.clone())?));

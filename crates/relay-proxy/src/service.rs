@@ -22,7 +22,7 @@ use relay_cache::{CacheRegistry, CachedResponse, ResponseCache};
 use relay_config::{AuthPolicyConfig, CacheConfig, RateLimitConfig, RateLimitKey, RetryConfig};
 use relay_core::GatewayError;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
-use relay_observability::Metrics;
+use relay_observability::{Metrics, inject_context, set_parent_from_headers};
 use relay_upstream::{PoolSelectionError, UpstreamLease};
 use serde_json::json;
 use tokio::time;
@@ -127,6 +127,7 @@ impl ProxyService {
             latency_ms = tracing::field::Empty,
             identity = tracing::field::Empty,
         );
+        set_parent_from_headers(&span, request.headers());
 
         async move {
             let started = Instant::now();
@@ -247,6 +248,7 @@ impl ProxyService {
                 downstream_protocol,
             )
             .map_err(|_| GatewayError::Internal)?;
+            inject_context(upstream_request.headers_mut());
             let circuit_permit = plan
                 .circuit
                 .try_acquire()

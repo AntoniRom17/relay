@@ -9,10 +9,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+http.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 prometheus.workspace = true
 relay-config = { path = "../relay-config" }
 thiserror.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]
