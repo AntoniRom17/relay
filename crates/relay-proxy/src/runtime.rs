@@ -164,3 +164,62 @@ pub enum RuntimeBuildError {
     #[error(transparent)]
     Authentication(#[from] AuthBuildError),
 }
+
+#[cfg(test)]
+mod tests {
+    use http::Request;
+    use relay_config::parse;
+
+    use super::*;
+
+    fn config(route: &str, path: &str) -> GatewayConfig {
+        parse(&format!(
+            r#"
+listeners:
+  - address: 127.0.0.1:8080
+routes:
+  - name: {route}
+    path_prefix: {path}
+    upstream: api
+upstreams:
+  api:
+    endpoints:
+      - url: http://127.0.0.1:9001
+redis: null
+"#
+        ))
+        .expect("test configuration should be valid")
+    }
+
+    #[test]
+    fn reload_is_atomic_and_old_snapshots_remain_valid() {
+        let store =
+            RuntimeStore::new(RuntimeState::build(config("old", "/old")).expect("initial runtime"));
+        let old_snapshot = store.load();
+        store
+            .reload(config("new", "/new"))
+            .expect("replacement runtime");
+        let new_snapshot = store.load();
+        let old_request = Request::get("/old/resource").body(()).expect("request");
+        let new_request = Request::get("/new/resource").body(()).expect("request");
+
+        assert_eq!(
+            old_snapshot
+                .plan(&old_request)
+                .expect("old route")
+                .route
+                .name,
+            "old"
+        );
+        assert!(old_snapshot.plan(&new_request).is_err());
+        assert_eq!(
+            new_snapshot
+                .plan(&new_request)
+                .expect("new route")
+                .route
+                .name,
+            "new"
+        );
+        assert!(new_snapshot.plan(&old_request).is_err());
+    }
+}
