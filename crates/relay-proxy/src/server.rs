@@ -25,6 +25,19 @@ pub async fn serve_http(
     serve(config, proxy, metrics, shutdown, None).await
 }
 
+/// Serves plaintext HTTP from an already-bound listener.
+///
+/// This supports socket activation, embedders, and race-free integration tests.
+pub async fn serve_http_on(
+    listener: TcpListener,
+    config: ListenerConfig,
+    proxy: ProxyService,
+    metrics: Metrics,
+    shutdown: Shutdown,
+) -> Result<(), ServeError> {
+    serve_listener(listener, config, proxy, metrics, shutdown, None).await
+}
+
 /// Serves one rustls HTTP listener until coordinated shutdown completes.
 pub async fn serve_tls(
     config: ListenerConfig,
@@ -49,11 +62,23 @@ async fn serve(
             address: config.address,
             source,
         })?;
+    serve_listener(listener, config, proxy, metrics, shutdown, tls).await
+}
+
+async fn serve_listener(
+    listener: TcpListener,
+    config: ListenerConfig,
+    proxy: ProxyService,
+    metrics: Metrics,
+    shutdown: Shutdown,
+    tls: Option<ReloadingTlsAcceptor>,
+) -> Result<(), ServeError> {
+    let local_address = listener.local_addr().map_err(ServeError::Accept)?;
     let connection_limit = Arc::new(tokio::sync::Semaphore::new(config.max_connections));
     let max_header_bytes = config.max_header_bytes;
     let header_timeout = Duration::from_millis(config.request_timeout_ms.min(10_000));
     let mut connections = JoinSet::new();
-    info!(address = %config.address, "data-plane listener started");
+    info!(address = %local_address, "data-plane listener started");
 
     loop {
         tokio::select! {
@@ -89,7 +114,7 @@ async fn serve(
         }
     }
 
-    info!(address = %config.address, "data-plane listener draining");
+    info!(address = %local_address, "data-plane listener draining");
     let drain = async {
         while let Some(result) = connections.join_next().await {
             if let Err(error) = result {
@@ -101,10 +126,10 @@ async fn serve(
         .await
         .is_err()
     {
-        warn!(address = %config.address, "shutdown grace period elapsed; aborting connections");
+        warn!(address = %local_address, "shutdown grace period elapsed; aborting connections");
         connections.abort_all();
     }
-    info!(address = %config.address, "data-plane listener stopped");
+    info!(address = %local_address, "data-plane listener stopped");
     Ok(())
 }
 
