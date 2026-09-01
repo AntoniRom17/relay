@@ -11,6 +11,7 @@ members = [
   "crates/relay-observability",
   "crates/relay-proxy",
   "crates/relay-routing",
+  "crates/relay-tls",
   "crates/relay-upstream",
 ]
 

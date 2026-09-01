@@ -1,0 +1,22 @@
+[package]
+name = "relay-tls"
+description = "Rustls listener identity loading and atomic certificate reload"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+arc-swap.workspace = true
+relay-config = { path = "../relay-config" }
+rustls.workspace = true
+rustls-pemfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+
+[lints]
+workspace = true
+
