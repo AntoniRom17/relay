@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 use crate::{
     headers::{prepare_downstream_response, prepare_upstream_request},
-    runtime::{RequestPlan, RuntimeStore},
+    runtime::{RequestPlan, RuntimeState, RuntimeStore},
 };
 
 const REQUEST_ID: &str = "x-request-id";
@@ -114,6 +114,10 @@ impl ProxyService {
         if let Ok(value) = HeaderValue::from_str(&request_id) {
             request.headers_mut().insert(REQUEST_ID, value);
         }
+        let runtime = self.runtime.load();
+        let metric_route = runtime
+            .route_name(&request)
+            .unwrap_or_else(|| "unmatched".to_owned());
 
         let span = info_span!(
             "proxy.request",
@@ -121,7 +125,7 @@ impl ProxyService {
             method = %method,
             host,
             path,
-            route = tracing::field::Empty,
+            route = metric_route,
             upstream = tracing::field::Empty,
             status = tracing::field::Empty,
             latency_ms = tracing::field::Empty,
@@ -135,7 +139,7 @@ impl ProxyService {
         async move {
             let started = Instant::now();
             let result = self
-                .forward(request, client_ip, downstream_protocol, started)
+                .forward(runtime, request, client_ip, downstream_protocol, started)
                 .await;
             let mut response = match result {
                 Ok(response) => response,
@@ -143,7 +147,7 @@ impl ProxyService {
                     let status = error.status_code();
                     tracing::Span::current().record("status", status.as_u16());
                     self.metrics.observe_request(
-                        "unmatched",
+                        &metric_route,
                         method.as_str(),
                         status.as_u16(),
                         started.elapsed().as_secs_f64(),
@@ -166,12 +170,12 @@ impl ProxyService {
     )]
     async fn forward(
         &self,
+        runtime: Arc<RuntimeState>,
         mut request: Request<Incoming>,
         client_ip: IpAddr,
         downstream_protocol: &'static str,
         started: Instant,
     ) -> Result<Response<ProxyBody>, GatewayError> {
-        let runtime = self.runtime.load();
         if let Some(limit) = &runtime.config().gateway_rate_limit {
             self.enforce_rate_limit("gateway", limit, client_ip, None)
                 .await?;
@@ -179,7 +183,6 @@ impl ProxyService {
         let plan = runtime.plan(&request)?;
         let request_method = request.method().as_str().to_owned();
         let original_uri = request.uri().clone();
-        tracing::Span::current().record("route", plan.route.name.as_str());
         if request_body_exceeds_limit(&request, plan.route.max_body_bytes) {
             return Err(GatewayError::RequestTooLarge);
         }
@@ -680,6 +683,7 @@ struct ObservedBody<B> {
     started: Instant,
     status: StatusCode,
     method: String,
+    span: tracing::Span,
 }
 
 impl<B> ObservedBody<B> {
@@ -700,6 +704,7 @@ impl<B> ObservedBody<B> {
             started,
             status,
             method,
+            span: tracing::Span::current(),
         }
     }
 }
@@ -738,7 +743,7 @@ impl<B> Drop for ObservedBody<B> {
             );
         }
         drop(self.upstream.take());
-        tracing::Span::current()
+        self.span
             .record("latency_ms", self.started.elapsed().as_secs_f64() * 1_000.0);
     }
 }

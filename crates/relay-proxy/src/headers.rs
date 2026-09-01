@@ -6,6 +6,8 @@ use thiserror::Error;
 const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 const X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
 const X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
+const X_FORWARDED_PORT: HeaderName = HeaderName::from_static("x-forwarded-port");
+const FORWARDED: HeaderName = HeaderName::from_static("forwarded");
 const VIA: HeaderName = HeaderName::from_static("via");
 
 /// Rewrites request headers at the downstream-to-upstream trust boundary.
@@ -16,13 +18,33 @@ pub(crate) fn prepare_upstream_request(
     protocol: &'static str,
 ) -> Result<(), HeaderRewriteError> {
     let original_host = headers.get(header::HOST).cloned();
+    let accepts_trailers = headers.get_all(header::TE).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|token| token.eq_ignore_ascii_case("trailers"))
+        })
+    });
     remove_hop_by_hop(headers);
+    for untrusted in [
+        FORWARDED,
+        X_FORWARDED_FOR,
+        X_FORWARDED_HOST,
+        X_FORWARDED_PROTO,
+        X_FORWARDED_PORT,
+    ] {
+        headers.remove(untrusted);
+    }
     headers.insert(header::HOST, HeaderValue::from_str(authority)?);
     headers.insert(
         X_FORWARDED_FOR,
         HeaderValue::from_str(&client_ip.to_string())?,
     );
     headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static(protocol));
+    if accepts_trailers {
+        headers.insert(header::TE, HeaderValue::from_static("trailers"));
+    }
     headers.insert(VIA, HeaderValue::from_static("1.1 relay"));
     if let Some(original_host) = original_host {
         headers.insert(X_FORWARDED_HOST, original_host);
@@ -95,6 +117,11 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("public.example"));
         headers.insert(X_FORWARDED_FOR, HeaderValue::from_static("203.0.113.99"));
+        headers.insert(
+            FORWARDED,
+            HeaderValue::from_static("for=203.0.113.99;proto=https"),
+        );
+        headers.insert(X_FORWARDED_PORT, HeaderValue::from_static("444"));
 
         prepare_upstream_request(
             &mut headers,
@@ -108,5 +135,23 @@ mod tests {
         assert_eq!(headers[X_FORWARDED_HOST], "public.example");
         assert_eq!(headers[X_FORWARDED_FOR], "192.0.2.10");
         assert_eq!(headers[X_FORWARDED_PROTO], "https");
+        assert!(!headers.contains_key(FORWARDED));
+        assert!(!headers.contains_key(X_FORWARDED_PORT));
+    }
+
+    #[test]
+    fn grpc_trailer_capability_survives_the_hop_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::TE, HeaderValue::from_static("trailers"));
+
+        prepare_upstream_request(
+            &mut headers,
+            "127.0.0.1:9001",
+            "192.0.2.10".parse().expect("valid IP"),
+            "https",
+        )
+        .expect("generated values should be valid");
+
+        assert_eq!(headers[header::TE], "trailers");
     }
 }

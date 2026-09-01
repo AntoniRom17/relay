@@ -135,6 +135,13 @@ impl RuntimeState {
         })
     }
 
+    /// Returns the stable name of the route that would match without admitting concurrency.
+    pub fn route_name<B>(&self, request: &Request<B>) -> Option<String> {
+        self.routes
+            .match_request(request)
+            .map(|matched| matched.route.name.clone())
+    }
+
     /// Returns the active validated configuration.
     pub fn config(&self) -> &Arc<GatewayConfig> {
         &self.config
@@ -247,5 +254,9 @@ redis: null
             "new"
         );
         assert!(new_snapshot.plan(&old_request).is_err());
+        assert_eq!(
+            new_snapshot.route_name(&new_request).as_deref(),
+            Some("new")
+        );
     }
 }

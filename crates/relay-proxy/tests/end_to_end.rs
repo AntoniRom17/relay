@@ -93,6 +93,7 @@ async fn spawn_upstream(
 
 struct RunningRelay {
     address: SocketAddr,
+    metrics: Metrics,
     shutdown: Shutdown,
     task: JoinHandle<Result<(), relay_proxy::ServeError>>,
 }
@@ -122,6 +123,7 @@ impl RunningRelay {
             RuntimeState::build(config).expect("compiled runtime"),
         ));
         let metrics = Metrics::new().expect("metrics");
+        let proxy_metrics = metrics.clone();
         let shutdown = Shutdown::new(Duration::from_secs(1));
         let proxy = ProxyService::new(
             runtime,
@@ -137,6 +139,7 @@ impl RunningRelay {
         });
         Self {
             address,
+            metrics: proxy_metrics,
             shutdown,
             task,
         }
@@ -273,6 +276,14 @@ async fn route_body_limits_reject_before_contacting_the_upstream() {
 
     assert_eq!(payload["error"]["code"], "request_too_large");
     assert_eq!(upstream.requests.load(Ordering::Acquire), 0);
+    let metrics = String::from_utf8(relay.metrics.encode().expect("metrics encode"))
+        .expect("Prometheus metrics are UTF-8");
+    assert!(
+        metrics.contains(
+            "relay_requests_total{method=\"POST\",route=\"integration\",status=\"413\"} 1"
+        )
+    );
+    assert!(!metrics.contains("route=\"unmatched\",status=\"413\""));
 
     relay.stop().await;
     upstream_task.abort();
