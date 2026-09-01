@@ -40,7 +40,7 @@ impl CachedResponse {
             headers,
             body,
             stored_at,
-            expires_at: stored_at + ttl,
+            expires_at: stored_at.checked_add(ttl).unwrap_or(stored_at),
         }
     }
 
@@ -162,14 +162,11 @@ impl ResponseCache {
             *existing = response;
             return true;
         }
-        if self
-            .count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < self.max_entries).then_some(count + 1)
-            })
-            .is_err()
-        {
-            return false;
+        if !self.reserve_entry() {
+            self.prune_expired();
+            if !self.reserve_entry() {
+                return false;
+            }
         }
         match self.entries.entry(key) {
             Entry::Occupied(mut entry) => {
@@ -181,6 +178,14 @@ impl ResponseCache {
             }
         }
         true
+    }
+
+    fn reserve_entry(&self) -> bool {
+        self.count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < self.max_entries).then_some(count + 1)
+            })
+            .is_ok()
     }
 
     /// Removes expired entries and returns the number evicted.
@@ -241,6 +246,24 @@ mod tests {
         assert!(cache.get("expired").is_none());
         assert!(cache.is_empty());
         assert!(cache.insert("replacement".to_owned(), response(Duration::from_secs(1))));
+    }
+
+    #[test]
+    fn insertion_reclaims_expired_capacity_without_a_matching_read() {
+        let cache = ResponseCache::new(1);
+        assert!(cache.insert("expired".to_owned(), response(Duration::ZERO)));
+
+        assert!(cache.insert("replacement".to_owned(), response(Duration::from_secs(1))));
+        assert!(cache.get("expired").is_none());
+        assert!(cache.get("replacement").is_some());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn an_unrepresentable_expiry_never_panics_or_becomes_immortal() {
+        let response = response(Duration::MAX);
+
+        assert!(!response.is_fresh(Instant::now()));
     }
 
     #[test]

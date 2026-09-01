@@ -128,6 +128,11 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     };
     let mut servers = JoinSet::new();
     {
+        let local_limiter = Arc::clone(&local_limiter);
+        let shutdown = shutdown.clone();
+        servers.spawn(async move { maintain_local_limits(local_limiter, shutdown).await });
+    }
+    {
         let runtime = Arc::clone(&runtime);
         let metrics = metrics.clone();
         let shutdown = shutdown.clone();
@@ -204,6 +209,31 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     }
     info!("Relay stopped cleanly");
     Ok(())
+}
+
+async fn maintain_local_limits(
+    limiter: Arc<LocalRateLimiter>,
+    shutdown: Shutdown,
+) -> anyhow::Result<()> {
+    const MAX_IDLE: Duration = Duration::from_secs(10 * 60);
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => return Ok(()),
+            _ = interval.tick() => {
+                let limiter = Arc::clone(&limiter);
+                let removed = tokio::task::spawn_blocking(move || limiter.prune_idle(MAX_IDLE))
+                    .await
+                    .context("local rate-limit maintenance task failed")?;
+                if removed > 0 {
+                    info!(removed, "pruned idle local rate-limit buckets");
+                }
+            }
+        }
+    }
 }
 
 fn redact(config: &mut GatewayConfig) {

@@ -5,6 +5,10 @@ route, and pool semaphores bound progressively smaller scopes. Local rate-limit 
 cache entries, cache body size, headers, request bodies, and connection tasks all have explicit
 limits. Rejections map to 413, 429, or 503 with stable error codes.
 
+Expired cache entries are reclaimed on reads and when insertion meets capacity. Local token-bucket
+identities are pruned after ten idle minutes by a once-per-minute blocking-pool maintenance job, so
+bounded state can recover without scanning the map on the request path.
+
 ## Retries and deadlines
 
 The listener request timeout currently forms the complete upstream-attempt deadline. Connect

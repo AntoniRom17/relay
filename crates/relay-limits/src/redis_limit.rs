@@ -64,11 +64,12 @@ impl RedisRateLimiter {
     /// Returns [`RedisLimitError`] when the atomic Redis script cannot be evaluated.
     pub async fn check(
         &self,
+        scope: &str,
         route: &str,
         key: &str,
         config: &RateLimitConfig,
     ) -> Result<LimitDecision, RedisLimitError> {
-        let redis_key = format!("{}:rate:{route}:{key}", self.prefix);
+        let redis_key = bucket_key(&self.prefix, scope, route, key);
         let mut manager = self.manager.clone();
         let (allowed, remaining, retry_ms): (i64, i64, i64) = Script::new(TOKEN_BUCKET_SCRIPT)
             .key(redis_key)
@@ -83,6 +84,10 @@ impl RedisRateLimiter {
             retry_after: Duration::from_millis(u64::try_from(retry_ms.max(0)).unwrap_or(u64::MAX)),
         })
     }
+}
+
+fn bucket_key(prefix: &str, scope: &str, route: &str, identity: &str) -> String {
+    format!("{prefix}:rate:{scope}:{route}:{identity}")
 }
 
 impl std::fmt::Debug for RedisRateLimiter {
@@ -100,4 +105,19 @@ pub enum RedisLimitError {
     /// Redis rejected or could not complete the operation.
     #[error("distributed rate limiter failed: {0}")]
     Redis(redis::RedisError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_namespaces_separate_gateway_route_and_identity_scopes() {
+        let gateway = bucket_key("relay", "gateway", "gateway", "global");
+        let route = bucket_key("relay", "route", "gateway", "global");
+        let client = bucket_key("relay", "client_ip", "gateway", "global");
+
+        assert_ne!(gateway, route);
+        assert_ne!(route, client);
+    }
 }

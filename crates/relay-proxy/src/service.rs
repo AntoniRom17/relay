@@ -399,7 +399,7 @@ impl ProxyService {
             self.redis_limiter
                 .as_ref()
                 .ok_or(GatewayError::DependencyUnavailable)?
-                .check(route, &identity, config)
+                .check(scope, route, &identity, config)
                 .await
                 .map_err(|error| {
                     warn!(%error, "distributed rate limiter unavailable");
@@ -407,7 +407,7 @@ impl ProxyService {
                 })?
         } else {
             self.local_limiter
-                .check(format!("{route}:{identity}"), config)
+                .check(format!("{scope}:{route}:{identity}"), config)
                 .map_err(|_| GatewayError::Overloaded)?
         };
         if decision.allowed {
