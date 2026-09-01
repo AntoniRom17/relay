@@ -126,15 +126,12 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     } else {
         None
     };
-    let connect_timeout = minimum_connect_timeout(&config);
     let mut servers = JoinSet::new();
     {
         let runtime = Arc::clone(&runtime);
         let metrics = metrics.clone();
         let shutdown = shutdown.clone();
-        servers.spawn(async move {
-            supervise_health_checks(runtime, metrics, connect_timeout, shutdown).await
-        });
+        servers.spawn(async move { supervise_health_checks(runtime, metrics, shutdown).await });
     }
     {
         let runtime = Arc::clone(&runtime);
@@ -157,7 +154,6 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
             Arc::clone(&runtime),
             metrics.clone(),
             Duration::from_millis(listener.request_timeout_ms),
-            connect_timeout,
             Arc::clone(&local_limiter),
             redis_limiter.clone(),
         );
@@ -220,15 +216,6 @@ fn redact(config: &mut GatewayConfig) {
     if let Some(redis) = &mut config.redis {
         "<redacted>".clone_into(&mut redis.url);
     }
-}
-
-fn minimum_connect_timeout(config: &GatewayConfig) -> Duration {
-    config
-        .upstreams
-        .values()
-        .map(|upstream| upstream.connect_timeout_ms)
-        .min()
-        .map_or(Duration::from_secs(3), Duration::from_millis)
 }
 
 async fn shutdown_signal() -> std::io::Result<()> {
@@ -353,10 +340,9 @@ fn ensure_reload_compatible(
 async fn supervise_health_checks(
     runtime: Arc<RuntimeStore>,
     metrics: Metrics,
-    connect_timeout: Duration,
     shutdown: Shutdown,
 ) -> anyhow::Result<()> {
-    let probe: Arc<dyn HealthProbe> = Arc::new(HyperHealthProbe::new(connect_timeout));
+    let probe: Arc<dyn HealthProbe> = Arc::new(HyperHealthProbe::new());
     let mut active = runtime.load();
     let mut generation_token = shutdown.child_token();
     let mut tasks = launch_health_generation(&active, &probe, &generation_token);

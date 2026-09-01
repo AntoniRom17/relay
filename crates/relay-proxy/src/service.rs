@@ -43,13 +43,12 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Unified streaming response body returned for upstream and local responses.
 pub type ProxyBody = UnsyncBoxBody<Bytes, BoxError>;
 
-type HttpsClient = Client<HttpsConnector<HttpConnector>, ProxyBody>;
+pub(crate) type HttpsClient = Client<HttpsConnector<HttpConnector>, ProxyBody>;
 
 /// Cloneable Hyper service implementing Relay's core proxy path.
 #[derive(Clone)]
 pub struct ProxyService {
     runtime: Arc<RuntimeStore>,
-    client: HttpsClient,
     metrics: Metrics,
     request_timeout: Duration,
     local_limiter: Arc<LocalRateLimiter>,
@@ -58,32 +57,16 @@ pub struct ProxyService {
 }
 
 impl ProxyService {
-    /// Builds an HTTP/1.1 and HTTP/2 client with pooled HTTP and HTTPS connections.
+    /// Creates a proxy service over runtime-compiled HTTP/HTTPS connection pools.
     pub fn new(
         runtime: Arc<RuntimeStore>,
         metrics: Metrics,
         request_timeout: Duration,
-        connect_timeout: Duration,
         local_limiter: Arc<LocalRateLimiter>,
         redis_limiter: Option<RedisRateLimiter>,
     ) -> Self {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let mut connector = HttpConnector::new();
-        connector.enforce_http(false);
-        connector.set_connect_timeout(Some(connect_timeout));
-        let https = HttpsConnectorBuilder::new()
-            .with_webpki_roots()
-            .https_or_http()
-            .enable_http1()
-            .enable_http2()
-            .wrap_connector(connector);
-        let client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(32)
-            .build(https);
         Self {
             runtime,
-            client,
             metrics,
             request_timeout,
             local_limiter,
@@ -277,44 +260,43 @@ impl ProxyService {
                 circuit_state_name(plan.circuit.snapshot().state),
             );
             let upstream_started = Instant::now();
-            let response =
-                match time::timeout(self.request_timeout, self.client.request(upstream_request))
-                    .await
-                {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(error)) => {
-                        circuit_permit.failure();
-                        plan.pool.record_passive_failure(endpoint);
-                        if error_chain_contains_length_limit(&error) {
-                            return Err(GatewayError::RequestTooLarge);
-                        }
-                        self.metrics.upstream_failure(
-                            plan.pool.name(),
-                            &endpoint_name,
-                            "transport",
-                        );
-                        warn!(attempt, %error, "upstream transport failed");
-                        if attempt < max_attempts {
-                            self.metrics.retry(&plan.route.name, "transport");
-                            time::sleep(retry_delay(&plan.route.retry, attempt)).await;
-                            continue;
-                        }
-                        return Err(GatewayError::UpstreamTransport);
+            let response = match time::timeout(
+                self.request_timeout,
+                plan.upstream_client.request(upstream_request),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    circuit_permit.failure();
+                    plan.pool.record_passive_failure(endpoint);
+                    if error_chain_contains_length_limit(&error) {
+                        return Err(GatewayError::RequestTooLarge);
                     }
-                    Err(_) => {
-                        circuit_permit.failure();
-                        plan.pool.record_passive_failure(endpoint);
-                        self.metrics
-                            .upstream_failure(plan.pool.name(), &endpoint_name, "timeout");
-                        warn!(attempt, "upstream request timed out");
-                        if attempt < max_attempts {
-                            self.metrics.retry(&plan.route.name, "timeout");
-                            time::sleep(retry_delay(&plan.route.retry, attempt)).await;
-                            continue;
-                        }
-                        return Err(GatewayError::UpstreamTimeout);
+                    self.metrics
+                        .upstream_failure(plan.pool.name(), &endpoint_name, "transport");
+                    warn!(attempt, %error, "upstream transport failed");
+                    if attempt < max_attempts {
+                        self.metrics.retry(&plan.route.name, "transport");
+                        time::sleep(retry_delay(&plan.route.retry, attempt)).await;
+                        continue;
                     }
-                };
+                    return Err(GatewayError::UpstreamTransport);
+                }
+                Err(_) => {
+                    circuit_permit.failure();
+                    plan.pool.record_passive_failure(endpoint);
+                    self.metrics
+                        .upstream_failure(plan.pool.name(), &endpoint_name, "timeout");
+                    warn!(attempt, "upstream request timed out");
+                    if attempt < max_attempts {
+                        self.metrics.retry(&plan.route.name, "timeout");
+                        time::sleep(retry_delay(&plan.route.retry, attempt)).await;
+                        continue;
+                    }
+                    return Err(GatewayError::UpstreamTimeout);
+                }
+            };
             let status = response.status();
             self.metrics.observe_upstream(
                 plan.pool.name(),
@@ -437,6 +419,23 @@ impl ProxyService {
             Err(GatewayError::RateLimited)
         }
     }
+}
+
+pub(crate) fn build_upstream_client(connect_timeout: Duration) -> HttpsClient {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let mut connector = HttpConnector::new();
+    connector.enforce_http(false);
+    connector.set_connect_timeout(Some(connect_timeout));
+    let https = HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(connector);
+    Client::builder(TokioExecutor::new())
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(32)
+        .build(https)
 }
 
 const fn circuit_state_name(state: CircuitState) -> &'static str {

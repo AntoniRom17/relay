@@ -20,11 +20,10 @@ pub struct HyperHealthProbe {
 
 impl HyperHealthProbe {
     /// Creates a probe client with HTTP/1.1 and HTTP/2 ALPN support.
-    pub fn new(connect_timeout: Duration) -> Self {
+    pub fn new() -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let mut connector = HttpConnector::new();
         connector.enforce_http(false);
-        connector.set_connect_timeout(Some(connect_timeout));
         let https = HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_or_http()
@@ -37,6 +36,12 @@ impl HyperHealthProbe {
                 .pool_max_idle_per_host(4)
                 .build(https),
         }
+    }
+}
+
+impl Default for HyperHealthProbe {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

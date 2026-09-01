@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwap;
 use http::Request;
@@ -10,12 +10,15 @@ use relay_upstream::{CircuitBreaker, Pool};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::service::{HttpsClient, build_upstream_client};
+
 /// Immutable routing and policy state installed in the data plane.
 #[derive(Debug)]
 pub struct RuntimeState {
     config: Arc<GatewayConfig>,
     routes: RouteTable,
     pools: BTreeMap<String, Arc<Pool>>,
+    upstream_clients: BTreeMap<String, HttpsClient>,
     circuits: BTreeMap<String, CircuitBreaker>,
     route_concurrency: BTreeMap<String, Arc<Semaphore>>,
     authenticator: Authenticator,
@@ -76,6 +79,16 @@ impl RuntimeState {
             .iter()
             .map(|(name, upstream)| (name.clone(), CircuitBreaker::new(&upstream.circuit_breaker)))
             .collect();
+        let upstream_clients = config
+            .upstreams
+            .iter()
+            .map(|(name, upstream)| {
+                (
+                    name.clone(),
+                    build_upstream_client(Duration::from_millis(upstream.connect_timeout_ms)),
+                )
+            })
+            .collect();
         let route_concurrency = config
             .routes
             .iter()
@@ -92,6 +105,7 @@ impl RuntimeState {
             config: Arc::new(config),
             routes,
             pools,
+            upstream_clients,
             circuits,
             route_concurrency,
             authenticator,
@@ -126,11 +140,17 @@ impl RuntimeState {
             .get(&matched.route.upstream)
             .ok_or(GatewayError::Internal)?
             .clone();
+        let upstream_client = self
+            .upstream_clients
+            .get(&matched.route.upstream)
+            .ok_or(GatewayError::Internal)?
+            .clone();
 
         Ok(RequestPlan {
             route: matched.route,
             pool,
             circuit,
+            upstream_client,
             _route_permit: route_permit,
         })
     }
@@ -184,6 +204,7 @@ pub struct RequestPlan {
     pub pool: Arc<Pool>,
     /// Circuit breaker associated with the pool.
     pub circuit: CircuitBreaker,
+    pub(crate) upstream_client: HttpsClient,
     _route_permit: OwnedSemaphorePermit,
 }
 

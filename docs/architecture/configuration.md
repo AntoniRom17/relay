@@ -15,6 +15,10 @@ observability/TLS/shutdown settings are immutable because changing them requires
 owned resources. Routes, upstreams, auth material, rate policies, cache policies, health checks, and
 circuits are replaced as one runtime generation.
 
+Runtime compilation also creates one pooled HTTP/HTTPS client per upstream pool. This preserves
+each pool's own `connect_timeout_ms` and ensures a successful reload swaps routing, policy, and
+transport settings as the same generation.
+
 There is no environment-variable interpolation inside YAML. Deployment systems should template or
 mount a complete file, and protect it as a secret-bearing artifact. `relay config print` provides a
 canonical representation while replacing Redis URLs and API-key digests.

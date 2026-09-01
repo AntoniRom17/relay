@@ -129,7 +129,6 @@ impl RunningRelay {
             runtime,
             metrics.clone(),
             Duration::from_secs(2),
-            Duration::from_millis(500),
             Arc::new(LocalRateLimiter::new(1024)),
             None,
         );
