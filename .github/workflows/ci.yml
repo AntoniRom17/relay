@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Format, lint, build, and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint every target
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Build every target
+        run: cargo build --workspace --all-targets --all-features --locked
+      - name: Run workspace tests
+        run: cargo test --workspace --all-features --locked
+      - name: Compile fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --locked
+      - name: Validate example configurations
+        shell: bash
+        run: |
+          for config in configs/basic.yaml configs/load-balanced.yaml configs/secured.yaml configs/full.yaml configs/docker.yaml deploy/kubernetes/relay.yaml; do
+            cargo run --quiet --locked -p relay-cli -- validate --config "$config"
+          done
+
+  windows:
+    name: Windows MSVC tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: relay:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
