@@ -1,0 +1,54 @@
+# Two local demo upstreams with weighted scheduling and active health checks.
+listeners:
+  - address: 127.0.0.1:8080
+    max_connections: 2000
+    request_timeout_ms: 5000
+    max_header_bytes: 32768
+
+admin:
+  enabled: true
+  address: 127.0.0.1:9090
+
+routes:
+  - name: demo-api
+    path_prefix: /
+    upstream: demo
+    retry:
+      max_attempts: 2
+      base_backoff_ms: 20
+      max_backoff_ms: 100
+      statuses: [502, 503, 504]
+    max_body_bytes: 1048576
+    concurrency_limit: 512
+
+upstreams:
+  demo:
+    load_balancing: weighted_round_robin
+    connect_timeout_ms: 1000
+    concurrency_limit: 1024
+    endpoints:
+      - url: http://127.0.0.1:9001
+        weight: 2
+      - url: http://127.0.0.1:9002
+        weight: 1
+    health_check:
+      path: /health
+      interval_ms: 2000
+      timeout_ms: 500
+      expected_status_min: 200
+      expected_status_max: 299
+      healthy_threshold: 2
+      unhealthy_threshold: 2
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout_ms: 10000
+      half_open_probe_limit: 1
+      success_threshold: 2
+
+authentication: {}
+observability:
+  log_filter: relay=info
+  json_logs: false
+redis: null
+gateway_rate_limit: null
+shutdown_grace_ms: 10000
