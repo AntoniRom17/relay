@@ -17,6 +17,12 @@ tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "load_balancing"
+harness = false
+
 [lints]
 workspace = true
-

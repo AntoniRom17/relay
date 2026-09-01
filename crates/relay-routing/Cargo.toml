@@ -14,8 +14,12 @@ relay-config = { path = "../relay-config" }
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
+
+[[bench]]
+name = "route_matching"
+harness = false
 
 [lints]
 workspace = true
-
