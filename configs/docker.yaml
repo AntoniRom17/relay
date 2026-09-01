@@ -1,0 +1,68 @@
+# Docker Compose demonstration: two upstreams, Redis limits, retries, cache, and metrics.
+listeners:
+  - address: 0.0.0.0:8080
+    max_connections: 2000
+    request_timeout_ms: 5000
+    max_header_bytes: 32768
+
+admin:
+  enabled: true
+  address: 0.0.0.0:9090
+  allow_remote: true
+
+routes:
+  - name: demo
+    path_prefix: /
+    upstream: demo
+    retry:
+      max_attempts: 2
+      base_backoff_ms: 20
+      max_backoff_ms: 100
+      statuses: [503]
+    rate_limit:
+      requests_per_second: 100
+      burst_capacity: 200
+      key: client_ip
+      distributed: true
+    cache:
+      ttl_seconds: 10
+      max_entries: 1000
+      max_body_bytes: 1048576
+    max_body_bytes: 1048576
+    concurrency_limit: 512
+
+upstreams:
+  demo:
+    load_balancing: round_robin
+    connect_timeout_ms: 1000
+    concurrency_limit: 1024
+    endpoints:
+      - url: http://app-a:9001
+      - url: http://app-b:9001
+    health_check:
+      path: /health
+      interval_ms: 2000
+      timeout_ms: 500
+      expected_status_min: 200
+      expected_status_max: 299
+      healthy_threshold: 2
+      unhealthy_threshold: 2
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout_ms: 10000
+      half_open_probe_limit: 1
+      success_threshold: 2
+
+authentication: {}
+observability:
+  log_filter: relay=info
+  json_logs: true
+redis:
+  url: redis://redis:6379/
+  key_prefix: relay:compose
+gateway_rate_limit:
+  requests_per_second: 1000
+  burst_capacity: 2000
+  key: route
+  distributed: true
+shutdown_grace_ms: 10000
