@@ -1492,6 +1492,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "http",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "relay-limits"
 version = "0.1.0"
 dependencies = [

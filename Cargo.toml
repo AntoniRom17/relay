@@ -8,6 +8,7 @@ members = [
   "crates/relay-config",
   "crates/relay-control",
   "crates/relay-core",
+  "crates/relay-demo",
   "crates/relay-limits",
   "crates/relay-observability",
   "crates/relay-proxy",
