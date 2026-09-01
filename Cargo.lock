@@ -1386,6 +1386,7 @@ dependencies = [
  "hyper-util",
  "rand 0.8.8",
  "relay-auth",
+ "relay-cache",
  "relay-config",
  "relay-core",
  "relay-limits",

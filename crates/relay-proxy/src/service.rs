@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::{Body, Frame};
 use http_body_util::{BodyExt as _, Empty, Full, combinators::UnsyncBoxBody};
@@ -18,7 +18,8 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use rand::Rng as _;
-use relay_config::{AuthPolicyConfig, RateLimitConfig, RateLimitKey, RetryConfig};
+use relay_cache::{CacheRegistry, CachedResponse, ResponseCache};
+use relay_config::{AuthPolicyConfig, CacheConfig, RateLimitConfig, RateLimitKey, RetryConfig};
 use relay_core::GatewayError;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::Metrics;
@@ -53,6 +54,7 @@ pub struct ProxyService {
     request_timeout: Duration,
     local_limiter: Arc<LocalRateLimiter>,
     redis_limiter: Option<RedisRateLimiter>,
+    cache_registry: Arc<CacheRegistry>,
 }
 
 impl ProxyService {
@@ -86,6 +88,7 @@ impl ProxyService {
             request_timeout,
             local_limiter,
             redis_limiter,
+            cache_registry: Arc::new(CacheRegistry::default()),
         }
     }
 
@@ -163,6 +166,7 @@ impl ProxyService {
         let runtime = self.runtime.load();
         let plan = runtime.plan(&request)?;
         let request_method = request.method().as_str().to_owned();
+        let original_uri = request.uri().clone();
         tracing::Span::current().record("route", plan.route.name.as_str());
         let mut api_key_limit_key = None;
         if let Some(policy) = &plan.route.authentication {
@@ -186,6 +190,20 @@ impl ProxyService {
                 api_key_limit_key.as_deref(),
             )
             .await?;
+        }
+        let cache_read = cache_read_plan(&request, &plan, &original_uri, &self.cache_registry);
+        if let Some((cache, key)) = &cache_read {
+            if let Some(cached) = cache.get(key) {
+                self.metrics.cache_event(&plan.route.name, "hit");
+                return Ok(cached_response(
+                    cached,
+                    plan,
+                    self.metrics.clone(),
+                    started,
+                    request_method,
+                ));
+            }
+            self.metrics.cache_event(&plan.route.name, "miss");
         }
         let replayable = is_replayable(&request);
         let template = RequestTemplate::from_request(&request);
@@ -295,17 +313,43 @@ impl ProxyService {
                 status = status.as_u16(),
                 attempt, "request headers completed"
             );
+            let cache_write = cache_read.and_then(|(cache, key)| {
+                cache_write_plan(
+                    &plan.route.name,
+                    cache,
+                    key,
+                    plan.route.cache.as_ref()?,
+                    &parts,
+                    &self.metrics,
+                )
+            });
+            if plan.route.cache.is_some() {
+                parts.headers.insert(
+                    "x-relay-cache",
+                    HeaderValue::from_static(if cache_write.is_some() {
+                        "MISS"
+                    } else {
+                        "BYPASS"
+                    }),
+                );
+            }
             let body = ObservedBody::new(
                 body,
                 plan,
-                upstream,
+                Some(upstream),
                 self.metrics.clone(),
                 started,
                 status,
                 request_method,
-            )
-            .map_err(|error| -> BoxError { Box::new(error) })
-            .boxed_unsync();
+            );
+            let body = if let Some(write) = cache_write {
+                CachingBody::new(body, write)
+                    .map_err(|error| -> BoxError { Box::new(error) })
+                    .boxed_unsync()
+            } else {
+                body.map_err(|error| -> BoxError { Box::new(error) })
+                    .boxed_unsync()
+            };
             return Ok(Response::from_parts(parts, body));
         }
     }
@@ -358,6 +402,218 @@ impl std::fmt::Debug for ProxyService {
     }
 }
 
+struct CacheWrite {
+    cache: Arc<ResponseCache>,
+    key: String,
+    route: String,
+    status: StatusCode,
+    version: http::Version,
+    headers: http::HeaderMap,
+    ttl: Duration,
+    max_body_bytes: usize,
+    metrics: Metrics,
+}
+
+struct CachingBody<B> {
+    inner: Pin<Box<B>>,
+    write: Option<CacheWrite>,
+    buffer: BytesMut,
+}
+
+impl<B> CachingBody<B> {
+    fn new(body: B, write: CacheWrite) -> Self {
+        Self {
+            inner: Box::pin(body),
+            buffer: BytesMut::with_capacity(write.max_body_bytes.min(64 * 1024)),
+            write: Some(write),
+        }
+    }
+
+    fn abandon(&mut self, outcome: &str) {
+        if let Some(write) = self.write.take() {
+            write.metrics.cache_event(&write.route, outcome);
+        }
+        self.buffer.clear();
+    }
+}
+
+impl<B> Body for CachingBody<B>
+where
+    B: Body<Data = Bytes>,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let polled = self.inner.as_mut().poll_frame(context);
+        match &polled {
+            Poll::Ready(Some(Ok(frame))) => {
+                if frame.trailers_ref().is_some() {
+                    self.abandon("trailers");
+                } else if let (Some(data), Some(write)) = (frame.data_ref(), self.write.as_ref()) {
+                    if self.buffer.len().saturating_add(data.len()) > write.max_body_bytes {
+                        self.abandon("oversized");
+                    } else {
+                        self.buffer.extend_from_slice(data);
+                    }
+                }
+            }
+            Poll::Ready(None) => {
+                if let Some(write) = self.write.take() {
+                    let cached = CachedResponse::new(
+                        write.status,
+                        write.version,
+                        write.headers,
+                        self.buffer.split().freeze(),
+                        write.ttl,
+                    );
+                    let outcome = if write.cache.insert(write.key, cached) {
+                        "stored"
+                    } else {
+                        "capacity"
+                    };
+                    write.metrics.cache_event(&write.route, outcome);
+                }
+            }
+            Poll::Pending | Poll::Ready(Some(Err(_))) => {}
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl<B> Drop for CachingBody<B> {
+    fn drop(&mut self) {
+        if let Some(write) = self.write.take() {
+            write.metrics.cache_event(&write.route, "aborted");
+        }
+    }
+}
+
+fn cache_read_plan<B>(
+    request: &Request<B>,
+    plan: &RequestPlan,
+    original_uri: &Uri,
+    registry: &CacheRegistry,
+) -> Option<(Arc<ResponseCache>, String)> {
+    let policy = plan.route.cache.as_ref()?;
+    if !matches!(*request.method(), http::Method::GET | http::Method::HEAD)
+        || request.headers().contains_key(header::AUTHORIZATION)
+        || request.headers().contains_key(header::COOKIE)
+        || header_has_directive(request.headers(), header::CACHE_CONTROL, "no-cache")
+        || header_has_directive(request.headers(), header::CACHE_CONTROL, "no-store")
+        || header_has_directive(request.headers(), header::PRAGMA, "no-cache")
+    {
+        return None;
+    }
+    let capacity = usize::try_from(policy.max_entries).ok()?;
+    let cache = registry.route(&plan.route.name, capacity);
+    let key = format!(
+        "{}\n{}\n{}",
+        plan.route.name,
+        request.method(),
+        original_uri
+    );
+    Some((cache, key))
+}
+
+fn cache_write_plan(
+    route: &str,
+    cache: Arc<ResponseCache>,
+    key: String,
+    policy: &CacheConfig,
+    parts: &http::response::Parts,
+    metrics: &Metrics,
+) -> Option<CacheWrite> {
+    if parts.status != StatusCode::OK
+        || parts.headers.contains_key(header::SET_COOKIE)
+        || parts.headers.contains_key(header::VARY)
+        || header_has_directive(&parts.headers, header::CACHE_CONTROL, "private")
+        || header_has_directive(&parts.headers, header::CACHE_CONTROL, "no-store")
+    {
+        metrics.cache_event(route, "uncacheable");
+        return None;
+    }
+    if parts
+        .headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > policy.max_body_bytes)
+    {
+        metrics.cache_event(route, "oversized");
+        return None;
+    }
+    let mut headers = parts.headers.clone();
+    headers.remove(header::AGE);
+    headers.remove("x-relay-cache");
+    Some(CacheWrite {
+        cache,
+        key,
+        route: route.to_owned(),
+        status: parts.status,
+        version: parts.version,
+        headers,
+        ttl: Duration::from_secs(policy.ttl_seconds),
+        max_body_bytes: policy.max_body_bytes,
+        metrics: metrics.clone(),
+    })
+}
+
+fn cached_response(
+    cached: CachedResponse,
+    plan: RequestPlan,
+    metrics: Metrics,
+    started: Instant,
+    method: String,
+) -> Response<ProxyBody> {
+    let age = cached.stored_at.elapsed().as_secs().to_string();
+    let mut response = Response::new(
+        ObservedBody::new(
+            Full::new(cached.body),
+            plan,
+            None,
+            metrics,
+            started,
+            cached.status,
+            method,
+        )
+        .map_err(|never: Infallible| -> BoxError { match never {} })
+        .boxed_unsync(),
+    );
+    *response.status_mut() = cached.status;
+    *response.version_mut() = cached.version;
+    *response.headers_mut() = cached.headers;
+    response
+        .headers_mut()
+        .insert("x-relay-cache", HeaderValue::from_static("HIT"));
+    if let Ok(value) = HeaderValue::from_str(&age) {
+        response.headers_mut().insert(header::AGE, value);
+    }
+    response
+}
+
+fn header_has_directive(headers: &http::HeaderMap, name: header::HeaderName, needle: &str) -> bool {
+    headers.get_all(name).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|directive| directive.eq_ignore_ascii_case(needle))
+        })
+    })
+}
+
 struct ObservedBody<B> {
     inner: Pin<Box<B>>,
     plan: Option<RequestPlan>,
@@ -372,7 +628,7 @@ impl<B> ObservedBody<B> {
     fn new(
         body: B,
         plan: RequestPlan,
-        upstream: UpstreamLease,
+        upstream: Option<UpstreamLease>,
         metrics: Metrics,
         started: Instant,
         status: StatusCode,
@@ -381,7 +637,7 @@ impl<B> ObservedBody<B> {
         Self {
             inner: Box::pin(body),
             plan: Some(plan),
-            upstream: Some(upstream),
+            upstream,
             metrics,
             started,
             status,
@@ -662,5 +918,68 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    }
+
+    fn cache_write(cache: Arc<ResponseCache>, max_body_bytes: usize) -> CacheWrite {
+        CacheWrite {
+            cache,
+            key: "route\nGET\n/items".to_owned(),
+            route: "route".to_owned(),
+            status: StatusCode::OK,
+            version: http::Version::HTTP_11,
+            headers: http::HeaderMap::new(),
+            ttl: Duration::from_secs(60),
+            max_body_bytes,
+            metrics: Metrics::new().expect("metrics"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_is_populated_only_after_a_complete_body() {
+        let cache = Arc::new(ResponseCache::new(1));
+        let body = CachingBody::new(
+            Full::new(Bytes::from_static(b"complete")),
+            cache_write(Arc::clone(&cache), 64),
+        );
+
+        let received = body.collect().await.expect("infallible body").to_bytes();
+        let cached = cache.get("route\nGET\n/items").expect("cached response");
+
+        assert_eq!(received, Bytes::from_static(b"complete"));
+        assert_eq!(cached.body, received);
+    }
+
+    #[tokio::test]
+    async fn oversized_streams_continue_downstream_without_being_cached() {
+        let cache = Arc::new(ResponseCache::new(1));
+        let body = CachingBody::new(
+            Full::new(Bytes::from_static(b"too large")),
+            cache_write(Arc::clone(&cache), 3),
+        );
+
+        let received = body.collect().await.expect("infallible body").to_bytes();
+
+        assert_eq!(received, Bytes::from_static(b"too large"));
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn cache_control_directives_are_case_insensitive_and_tokenized() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, No-Store"),
+        );
+
+        assert!(header_has_directive(
+            &headers,
+            header::CACHE_CONTROL,
+            "no-store"
+        ));
+        assert!(!header_has_directive(
+            &headers,
+            header::CACHE_CONTROL,
+            "private"
+        ));
     }
 }
