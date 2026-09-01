@@ -33,7 +33,7 @@ fn match_routes(criterion: &mut Criterion) {
         .expect("request");
 
     criterion.bench_function("route_match/256/late_prefix", |bencher| {
-        bencher.iter(|| black_box(table.match_request(black_box(&request))))
+        bencher.iter(|| black_box(table.match_request(black_box(&request))));
     });
 }
 

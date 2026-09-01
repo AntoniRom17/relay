@@ -34,6 +34,11 @@ impl Drop for TelemetryGuard {
 }
 
 /// Installs Relay's process-wide structured tracing subscriber.
+///
+/// # Errors
+///
+/// Returns [`LoggingError`] when the filter, OTLP exporter, or global subscriber cannot be
+/// initialized.
 pub fn init_logging(config: &ObservabilityConfig) -> Result<TelemetryGuard, LoggingError> {
     let filter = EnvFilter::try_new(&config.log_filter)?;
     global::set_text_map_propagator(TraceContextPropagator::new());

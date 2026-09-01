@@ -20,6 +20,11 @@ pub struct ReloadingTlsAcceptor {
 
 impl ReloadingTlsAcceptor {
     /// Loads the initial certificate chain and private key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsLoadError`] when a configured PEM file cannot be read or parsed, or the key
+    /// does not match the certificate chain.
     pub fn from_files(config: &TlsConfig) -> Result<Self, TlsLoadError> {
         Ok(Self {
             active: Arc::new(ArcSwap::from(load_server_config(config)?)),
@@ -27,6 +32,10 @@ impl ReloadingTlsAcceptor {
     }
 
     /// Completes a server-side TLS handshake with the currently installed identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the peer disconnects or the TLS handshake fails.
     pub async fn accept(&self, stream: TcpStream) -> Result<TlsStream<TcpStream>, std::io::Error> {
         TlsAcceptor::from(self.active.load_full())
             .accept(stream)
@@ -34,6 +43,11 @@ impl ReloadingTlsAcceptor {
     }
 
     /// Validates and atomically replaces the certificate identity for new connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsLoadError`] without changing the active identity when replacement material is
+    /// unreadable or invalid.
     pub fn reload(&self, config: &TlsConfig) -> Result<(), TlsLoadError> {
         self.active.store(load_server_config(config)?);
         Ok(())

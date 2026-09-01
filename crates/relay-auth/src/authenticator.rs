@@ -21,6 +21,10 @@ struct JwtProvider {
 
 impl Authenticator {
     /// Compiles configured key digests and JWT public keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthBuildError`] when a digest or asymmetric verification key is invalid.
     pub fn from_config(config: &AuthenticationConfig) -> Result<Self, AuthBuildError> {
         let api_keys = config
             .api_key_sha256
@@ -53,6 +57,11 @@ impl Authenticator {
     }
 
     /// Enforces a route policy and returns non-secret identity context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError`] for missing, malformed, unknown, expired, or otherwise invalid
+    /// credentials.
     pub fn authenticate(
         &self,
         headers: &HeaderMap,
@@ -131,7 +140,7 @@ impl std::fmt::Debug for Authenticator {
             .debug_struct("Authenticator")
             .field("api_key_count", &self.api_keys.len())
             .field("jwt_provider_count", &self.jwt_providers.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -186,7 +195,7 @@ impl std::fmt::Debug for AuthIdentity {
             .field("subject", &self.subject)
             .field("api_key_fingerprint", &self.api_key_fingerprint)
             .field("claims_present", &self.claims.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

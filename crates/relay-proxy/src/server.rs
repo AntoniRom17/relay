@@ -16,6 +16,10 @@ use tracing::{debug, info, warn};
 use crate::ProxyService;
 
 /// Serves one plaintext HTTP listener until coordinated shutdown completes.
+///
+/// # Errors
+///
+/// Returns [`ServeError`] if the address cannot be bound or the listener cannot accept a socket.
 pub async fn serve_http(
     config: ListenerConfig,
     proxy: ProxyService,
@@ -28,6 +32,10 @@ pub async fn serve_http(
 /// Serves plaintext HTTP from an already-bound listener.
 ///
 /// This supports socket activation, embedders, and race-free integration tests.
+///
+/// # Errors
+///
+/// Returns [`ServeError`] if the supplied listener cannot report or accept on its local socket.
 pub async fn serve_http_on(
     listener: TcpListener,
     config: ListenerConfig,
@@ -39,6 +47,10 @@ pub async fn serve_http_on(
 }
 
 /// Serves one rustls HTTP listener until coordinated shutdown completes.
+///
+/// # Errors
+///
+/// Returns [`ServeError`] if the address cannot be bound or the listener cannot accept a socket.
 pub async fn serve_tls(
     config: ListenerConfig,
     proxy: ProxyService,

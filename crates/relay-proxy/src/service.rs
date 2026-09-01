@@ -157,6 +157,10 @@ impl ProxyService {
         .await
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the linear request lifecycle keeps retry ownership and RAII permits explicit"
+    )]
     async fn forward(
         &self,
         mut request: Request<Incoming>,

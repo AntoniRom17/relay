@@ -25,13 +25,13 @@ fn select_endpoints(criterion: &mut Criterion) {
     let least = LeastConnections;
     let mut group = criterion.benchmark_group("load_balancer/16_healthy");
     group.bench_function("round_robin", |bencher| {
-        bencher.iter(|| round_robin.select(black_box(&endpoints)))
+        bencher.iter(|| round_robin.select(black_box(&endpoints)));
     });
     group.bench_function("weighted_round_robin", |bencher| {
-        bencher.iter(|| weighted.select(black_box(&endpoints)))
+        bencher.iter(|| weighted.select(black_box(&endpoints)));
     });
     group.bench_function("least_connections", |bencher| {
-        bencher.iter(|| least.select(black_box(&endpoints)))
+        bencher.iter(|| least.select(black_box(&endpoints)));
     });
     group.finish();
 }

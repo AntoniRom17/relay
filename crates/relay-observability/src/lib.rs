@@ -42,7 +42,7 @@ impl Injector for HeaderInjector<'_> {
 pub fn set_parent_from_headers(span: &tracing::Span, headers: &HeaderMap) {
     let parent =
         global::get_text_map_propagator(|propagator| propagator.extract(&HeaderExtractor(headers)));
-    let _ = span.set_parent(parent);
+    span.set_parent(parent);
 }
 
 /// Injects the current span's W3C trace context into outgoing HTTP headers.

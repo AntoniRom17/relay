@@ -51,6 +51,11 @@ impl Pool {
     }
 
     /// Immediately selects an endpoint without creating an unbounded wait queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PoolSelectionError::Overloaded`] when the pool is at capacity, or
+    /// [`PoolSelectionError::NoHealthyEndpoint`] when no endpoint is eligible.
     pub fn try_select(&self) -> Result<UpstreamLease, PoolSelectionError> {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()

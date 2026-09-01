@@ -41,6 +41,11 @@ impl RuntimeStore {
     }
 
     /// Compiles and atomically installs a new configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeBuildError`] without changing the active snapshot when routes or
+    /// authentication material cannot be compiled.
     pub fn reload(&self, config: GatewayConfig) -> Result<(), RuntimeBuildError> {
         let replacement = Arc::new(RuntimeState::build(config)?);
         self.active.store(replacement);
@@ -50,6 +55,10 @@ impl RuntimeStore {
 
 impl RuntimeState {
     /// Builds request-processing state from validated configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeBuildError`] when route matchers or authentication material are invalid.
     pub fn build(config: GatewayConfig) -> Result<Self, RuntimeBuildError> {
         let routes = RouteTable::compile(config.routes.clone())?;
         let pools = config
@@ -90,6 +99,11 @@ impl RuntimeState {
     }
 
     /// Matches and admits a request to its route-level concurrency budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatewayError::RouteNotFound`] for unmatched requests and
+    /// [`GatewayError::Overloaded`] when the matched route has no remaining capacity.
     pub fn plan<B>(&self, request: &Request<B>) -> Result<RequestPlan, GatewayError> {
         let matched = self
             .routes
@@ -186,7 +200,7 @@ mod tests {
 
     fn config(route: &str, path: &str) -> GatewayConfig {
         parse(&format!(
-            r#"
+            r"
 listeners:
   - address: 127.0.0.1:8080
 routes:
@@ -198,7 +212,7 @@ upstreams:
     endpoints:
       - url: http://127.0.0.1:9001
 redis: null
-"#
+"
         ))
         .expect("test configuration should be valid")
     }

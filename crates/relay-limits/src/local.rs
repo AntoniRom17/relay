@@ -32,6 +32,11 @@ impl LocalRateLimiter {
     }
 
     /// Consumes one token for `key` using the supplied route policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalLimitError::CapacityExceeded`] rather than allocating an unbounded number of
+    /// independent buckets.
     pub fn check(
         &self,
         key: impl Into<String>,
@@ -102,7 +107,7 @@ fn apply_bucket(bucket: &mut Bucket, config: &RateLimitConfig, now: Instant) -> 
         bucket.tokens -= 1.0;
         LimitDecision {
             allowed: true,
-            remaining: bucket.tokens.floor() as u32,
+            remaining: whole_tokens(bucket.tokens),
             retry_after: Duration::ZERO,
         }
     } else {
@@ -113,6 +118,13 @@ fn apply_bucket(bucket: &mut Bucket, config: &RateLimitConfig, now: Instant) -> 
             retry_after: Duration::from_secs_f64(missing / rate),
         }
     }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn whole_tokens(tokens: f64) -> u32 {
+    // Token state is clamped to a u32-derived burst capacity and cannot be negative here.
+    debug_assert!(tokens >= 0.0 && tokens <= f64::from(u32::MAX));
+    tokens.floor() as u32
 }
 
 /// Result of applying a token-bucket policy.

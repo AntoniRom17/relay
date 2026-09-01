@@ -55,6 +55,10 @@ impl ControlPlane {
     }
 
     /// Binds and serves the administrative listener until shutdown begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlPlaneError`] when the listener cannot bind or the HTTP server fails.
     pub async fn serve(
         self,
         address: SocketAddr,
@@ -310,7 +314,7 @@ mod tests {
 
     use super::*;
 
-    const CONFIG: &str = r#"
+    const CONFIG: &str = r"
 listeners:
   - address: 127.0.0.1:8080
 admin:
@@ -329,7 +333,7 @@ authentication:
     - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 redis:
   url: redis://:super-secret@127.0.0.1:6379/0
-"#;
+";
 
     fn control() -> ControlPlane {
         let runtime = Arc::new(RuntimeStore::new(

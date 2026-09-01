@@ -65,6 +65,10 @@ enum PathMatcher {
 
 impl RouteTable {
     /// Compiles route strings into HTTP types and sorts them by specificity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouteBuildError`] when a method or required header cannot be compiled.
     pub fn compile(routes: Vec<RouteConfig>) -> Result<Self, RouteBuildError> {
         let mut compiled = routes
             .into_iter()

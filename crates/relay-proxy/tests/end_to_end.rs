@@ -1,6 +1,7 @@
 //! Real-socket integration tests for Relay's streaming data plane.
 
 use std::{
+    fmt::Write as _,
     net::{Ipv4Addr, SocketAddr},
     sync::{
         Arc,
@@ -102,10 +103,11 @@ impl RunningRelay {
             .await
             .expect("bind Relay");
         let address = listener.local_addr().expect("Relay address");
-        let endpoint_yaml = endpoints
-            .iter()
-            .map(|endpoint| format!("      - url: http://{endpoint}\n"))
-            .collect::<String>();
+        let mut endpoint_yaml = String::new();
+        for endpoint in endpoints {
+            writeln!(endpoint_yaml, "      - url: http://{endpoint}")
+                .expect("writing to a String cannot fail");
+        }
         let cache_yaml = if cache {
             "    cache:\n      ttl_seconds: 60\n      max_entries: 32\n      max_body_bytes: 4096\n"
         } else {

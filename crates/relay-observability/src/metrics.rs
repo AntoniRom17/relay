@@ -29,6 +29,10 @@ struct MetricsInner {
 
 impl Metrics {
     /// Constructs and registers all gateway instruments in an isolated registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Prometheus error if a descriptor is invalid or duplicated.
     pub fn new() -> Result<Self, prometheus::Error> {
         let registry = Registry::new();
         let requests = IntCounterVec::new(
@@ -40,9 +44,7 @@ impl Metrics {
                 "relay_request_duration_seconds",
                 "End-to-end client request latency",
             )
-            .buckets(vec![
-                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
-            ]),
+            .buckets(request_latency_buckets()),
             &["route"],
         )?;
         let upstream_requests = IntCounterVec::new(
@@ -57,9 +59,7 @@ impl Metrics {
                 "relay_upstream_request_duration_seconds",
                 "Latency of individual upstream attempts",
             )
-            .buckets(vec![
-                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
-            ]),
+            .buckets(upstream_latency_buckets()),
             &["pool", "endpoint"],
         )?;
         let upstream_failures = IntCounterVec::new(
@@ -116,39 +116,24 @@ impl Metrics {
             &["route", "outcome"],
         )?;
 
-        for collector in [
-            Box::new(requests.clone()) as Box<dyn prometheus::core::Collector>,
-            Box::new(request_duration.clone()),
-            Box::new(upstream_requests.clone()),
-            Box::new(upstream_duration.clone()),
-            Box::new(upstream_failures.clone()),
-            Box::new(active_connections.clone()),
-            Box::new(rate_limit_rejections.clone()),
-            Box::new(retry_attempts.clone()),
-            Box::new(circuit_breaker_state.clone()),
-            Box::new(upstream_health.clone()),
-            Box::new(config_reload.clone()),
-            Box::new(cache_events.clone()),
-        ] {
-            registry.register(collector)?;
-        }
-
+        let inner = MetricsInner {
+            registry,
+            requests,
+            request_duration,
+            upstream_requests,
+            upstream_duration,
+            upstream_failures,
+            active_connections,
+            rate_limit_rejections,
+            retry_attempts,
+            circuit_breaker_state,
+            upstream_health,
+            config_reload,
+            cache_events,
+        };
+        inner.register()?;
         Ok(Self {
-            inner: Arc::new(MetricsInner {
-                registry,
-                requests,
-                request_duration,
-                upstream_requests,
-                upstream_duration,
-                upstream_failures,
-                active_connections,
-                rate_limit_rejections,
-                retry_attempts,
-                circuit_breaker_state,
-                upstream_health,
-                config_reload,
-                cache_events,
-            }),
+            inner: Arc::new(inner),
         })
     }
 
@@ -240,12 +225,48 @@ impl Metrics {
     }
 
     /// Encodes the current registry using Prometheus' text exposition format.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Prometheus encoding error if a gathered metric family is invalid.
     pub fn encode(&self) -> Result<Vec<u8>, prometheus::Error> {
         let families = self.inner.registry.gather();
         let mut output = Vec::new();
         TextEncoder::new().encode(&families, &mut output)?;
         Ok(output)
     }
+}
+
+impl MetricsInner {
+    fn register(&self) -> Result<(), prometheus::Error> {
+        for collector in [
+            Box::new(self.requests.clone()) as Box<dyn prometheus::core::Collector>,
+            Box::new(self.request_duration.clone()),
+            Box::new(self.upstream_requests.clone()),
+            Box::new(self.upstream_duration.clone()),
+            Box::new(self.upstream_failures.clone()),
+            Box::new(self.active_connections.clone()),
+            Box::new(self.rate_limit_rejections.clone()),
+            Box::new(self.retry_attempts.clone()),
+            Box::new(self.circuit_breaker_state.clone()),
+            Box::new(self.upstream_health.clone()),
+            Box::new(self.config_reload.clone()),
+            Box::new(self.cache_events.clone()),
+        ] {
+            self.registry.register(collector)?;
+        }
+        Ok(())
+    }
+}
+
+fn request_latency_buckets() -> Vec<f64> {
+    vec![
+        0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+    ]
+}
+
+fn upstream_latency_buckets() -> Vec<f64> {
+    vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]
 }
 
 impl std::fmt::Debug for Metrics {

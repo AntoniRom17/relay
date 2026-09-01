@@ -126,12 +126,7 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     } else {
         None
     };
-    let connect_timeout = config
-        .upstreams
-        .values()
-        .map(|upstream| upstream.connect_timeout_ms)
-        .min()
-        .map_or(Duration::from_secs(3), Duration::from_millis);
+    let connect_timeout = minimum_connect_timeout(&config);
     let mut servers = JoinSet::new();
     {
         let runtime = Arc::clone(&runtime);
@@ -223,8 +218,17 @@ fn redact(config: &mut GatewayConfig) {
         vec![format!("<redacted:{key_count}-digests>")]
     };
     if let Some(redis) = &mut config.redis {
-        redis.url = "<redacted>".to_owned();
+        "<redacted>".clone_into(&mut redis.url);
     }
+}
+
+fn minimum_connect_timeout(config: &GatewayConfig) -> Duration {
+    config
+        .upstreams
+        .values()
+        .map(|upstream| upstream.connect_timeout_ms)
+        .min()
+        .map_or(Duration::from_secs(3), Duration::from_millis)
 }
 
 async fn shutdown_signal() -> std::io::Result<()> {

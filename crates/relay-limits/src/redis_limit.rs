@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::LimitDecision;
 
-const TOKEN_BUCKET_SCRIPT: &str = r#"
+const TOKEN_BUCKET_SCRIPT: &str = r"
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + (tonumber(now_parts[2]) / 1000000)
 local rate = tonumber(ARGV[1])
@@ -29,7 +29,7 @@ redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated_at', now)
 local ttl_ms = math.max(1000, math.ceil((capacity / rate) * 2000))
 redis.call('PEXPIRE', KEYS[1], ttl_ms)
 return {allowed, math.floor(tokens), retry_ms}
-"#;
+";
 
 /// Redis-backed token bucket using one server-time Lua transaction per decision.
 #[derive(Clone)]
@@ -40,6 +40,11 @@ pub struct RedisRateLimiter {
 
 impl RedisRateLimiter {
     /// Connects to Redis and creates a multiplexed reconnecting manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisLimitError`] when the URL is invalid or an initial Redis connection cannot
+    /// be established.
     pub async fn connect(url: &str, prefix: impl Into<Arc<str>>) -> Result<Self, RedisLimitError> {
         let client = redis::Client::open(url).map_err(RedisLimitError::Redis)?;
         let manager = client
@@ -53,6 +58,10 @@ impl RedisRateLimiter {
     }
 
     /// Atomically consumes one token for a route and non-secret identity key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisLimitError`] when the atomic Redis script cannot be evaluated.
     pub async fn check(
         &self,
         route: &str,

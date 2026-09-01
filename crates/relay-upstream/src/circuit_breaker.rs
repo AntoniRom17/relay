@@ -52,6 +52,11 @@ impl CircuitBreaker {
     }
 
     /// Attempts to admit an upstream request through the circuit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CircuitOpen`] while recovery requests are not yet eligible or all half-open probe
+    /// permits are in flight.
     pub fn try_acquire(&self) -> Result<CircuitPermit, CircuitOpen> {
         let now = Instant::now();
         let mut state = self.lock_state();
