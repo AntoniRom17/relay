@@ -22,6 +22,7 @@ relay-limits = { path = "../relay-limits" }
 relay-observability = { path = "../relay-observability" }
 relay-proxy = { path = "../relay-proxy" }
 relay-upstream = { path = "../relay-upstream" }
+relay-tls = { path = "../relay-tls" }
 serde_yaml.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

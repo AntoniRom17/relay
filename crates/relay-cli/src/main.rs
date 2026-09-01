@@ -9,7 +9,10 @@ use relay_control::ControlPlane;
 use relay_core::Shutdown;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::{Metrics, init_logging};
-use relay_proxy::{HyperHealthProbe, ProxyService, RuntimeState, RuntimeStore, serve_http};
+use relay_proxy::{
+    HyperHealthProbe, ProxyService, RuntimeState, RuntimeStore, serve_http, serve_tls,
+};
+use relay_tls::ReloadingTlsAcceptor;
 use relay_upstream::{HealthProbe, spawn_health_checks};
 use tokio::task::JoinSet;
 use tracing::{error, info};
@@ -110,7 +113,6 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     let config = load_from_path(&path)
         .with_context(|| format!("unable to start from {}", path.display()))?;
     init_logging(&config.observability)?;
-    reject_unavailable_listener_features(&config)?;
     let metrics = Metrics::new().context("failed to create metrics registry")?;
     let shutdown = Shutdown::new(Duration::from_millis(config.shutdown_grace_ms));
     let runtime = Arc::new(RuntimeStore::new(RuntimeState::build(config.clone())?));
@@ -150,6 +152,12 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     }
 
     for listener in config.listeners.clone() {
+        let tls_acceptor = listener
+            .tls
+            .as_ref()
+            .map(ReloadingTlsAcceptor::from_files)
+            .transpose()
+            .context("failed to load listener TLS identity")?;
         let proxy = ProxyService::new(
             Arc::clone(&runtime),
             metrics.clone(),
@@ -161,9 +169,11 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
         let metrics = metrics.clone();
         let shutdown = shutdown.clone();
         servers.spawn(async move {
-            serve_http(listener, proxy, metrics, shutdown)
-                .await
-                .map_err(anyhow::Error::from)
+            match tls_acceptor {
+                Some(acceptor) => serve_tls(listener, proxy, metrics, shutdown, acceptor).await,
+                None => serve_http(listener, proxy, metrics, shutdown).await,
+            }
+            .map_err(anyhow::Error::from)
         });
     }
     if config.admin.enabled {
@@ -202,17 +212,6 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
         }
     }
     info!("Relay stopped cleanly");
-    Ok(())
-}
-
-fn reject_unavailable_listener_features(config: &GatewayConfig) -> anyhow::Result<()> {
-    if config
-        .listeners
-        .iter()
-        .any(|listener| listener.tls.is_some())
-    {
-        bail!("TLS listener configuration requires the relay-tls feature, not yet enabled")
-    }
     Ok(())
 }
 
