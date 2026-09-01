@@ -24,6 +24,7 @@ struct MetricsInner {
     circuit_breaker_state: IntGaugeVec,
     upstream_health: IntGaugeVec,
     config_reload: IntCounterVec,
+    cache_events: IntCounterVec,
 }
 
 impl Metrics {
@@ -107,6 +108,13 @@ impl Metrics {
             ),
             &["outcome"],
         )?;
+        let cache_events = IntCounterVec::new(
+            Opts::new(
+                "relay_cache_events_total",
+                "Response cache events partitioned by route and outcome",
+            ),
+            &["route", "outcome"],
+        )?;
 
         for collector in [
             Box::new(requests.clone()) as Box<dyn prometheus::core::Collector>,
@@ -120,6 +128,7 @@ impl Metrics {
             Box::new(circuit_breaker_state.clone()),
             Box::new(upstream_health.clone()),
             Box::new(config_reload.clone()),
+            Box::new(cache_events.clone()),
         ] {
             registry.register(collector)?;
         }
@@ -138,6 +147,7 @@ impl Metrics {
                 circuit_breaker_state,
                 upstream_health,
                 config_reload,
+                cache_events,
             }),
         })
     }
@@ -221,6 +231,14 @@ impl Metrics {
         self.inner.config_reload.with_label_values(&[outcome]).inc();
     }
 
+    /// Records a response-cache hit, miss, insertion, or rejection.
+    pub fn cache_event(&self, route: &str, outcome: &str) {
+        self.inner
+            .cache_events
+            .with_label_values(&[route, outcome])
+            .inc();
+    }
+
     /// Encodes the current registry using Prometheus' text exposition format.
     pub fn encode(&self) -> Result<Vec<u8>, prometheus::Error> {
         let families = self.inner.registry.gather();
@@ -245,6 +263,7 @@ mod tests {
         let metrics = Metrics::new().expect("metric descriptors should be valid");
         metrics.observe_request("api", "GET", 200, 0.012);
         metrics.set_upstream_health("primary", "http://127.0.0.1:9001", true);
+        metrics.cache_event("api", "hit");
 
         let encoded = String::from_utf8(metrics.encode().expect("encoding should succeed"))
             .expect("Prometheus output should be UTF-8");
@@ -255,5 +274,6 @@ mod tests {
         assert!(encoded.contains(
             "relay_upstream_health{endpoint=\"http://127.0.0.1:9001\",pool=\"primary\"} 1"
         ));
+        assert!(encoded.contains("relay_cache_events_total{outcome=\"hit\",route=\"api\"} 1"));
     }
 }
