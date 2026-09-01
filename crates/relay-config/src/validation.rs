@@ -3,7 +3,19 @@ use std::{collections::HashSet, fs, path::Path};
 use http::{HeaderName, HeaderValue, Method};
 use thiserror::Error;
 
-use crate::{AuthPolicyConfig, GatewayConfig, RateLimitKey, RouteConfig, UpstreamConfig};
+use crate::{
+    AuthPolicyConfig, GatewayConfig, LoadBalancingPolicy, RateLimitKey, RouteConfig, UpstreamConfig,
+};
+
+const MAX_LISTENERS: usize = 64;
+const MAX_ROUTES: usize = 10_000;
+const MAX_UPSTREAMS: usize = 10_000;
+const MAX_ENDPOINTS_PER_POOL: usize = 1_024;
+const MAX_WEIGHTED_SCHEDULE_SLOTS: u64 = 65_536;
+const MAX_API_KEYS: usize = 10_000;
+const MAX_JWT_PROVIDERS: usize = 1_000;
+const MAX_CACHE_ENTRIES: u64 = 10_000;
+const MAX_ROUTE_CACHE_BODY_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Failure to read, decode, or semantically validate configuration.
 #[derive(Debug, Error)]
@@ -77,6 +89,21 @@ fn validate_top_level(config: &GatewayConfig, problems: &mut Vec<String>) {
     }
     if config.routes.is_empty() {
         problems.push("routes: at least one route is required".to_owned());
+    }
+    if config.listeners.len() > MAX_LISTENERS {
+        problems.push(format!(
+            "listeners: must not contain more than {MAX_LISTENERS} entries"
+        ));
+    }
+    if config.routes.len() > MAX_ROUTES {
+        problems.push(format!(
+            "routes: must not contain more than {MAX_ROUTES} entries"
+        ));
+    }
+    if config.upstreams.len() > MAX_UPSTREAMS {
+        problems.push(format!(
+            "upstreams: must not contain more than {MAX_UPSTREAMS} pools"
+        ));
     }
     if config.shutdown_grace_ms == 0 {
         problems.push("shutdown_grace_ms: must be greater than zero".to_owned());
@@ -282,12 +309,20 @@ fn validate_cache(route: &RouteConfig, field: &str, problems: &mut Vec<String>) 
             "{field}.cache: authenticated routes are not cacheable without an explicit private-cache policy"
         ));
     }
-    if cache.max_entries > 100_000 {
-        problems.push(format!("{field}.cache.max_entries: must not exceed 100000"));
+    if cache.max_entries > MAX_CACHE_ENTRIES {
+        problems.push(format!(
+            "{field}.cache.max_entries: must not exceed {MAX_CACHE_ENTRIES}"
+        ));
     }
     if cache.max_body_bytes > 16 * 1024 * 1024 {
         problems.push(format!(
             "{field}.cache.max_body_bytes: must not exceed 16777216"
+        ));
+    }
+    let max_body_bytes = u64::try_from(cache.max_body_bytes).unwrap_or(u64::MAX);
+    if cache.max_entries.saturating_mul(max_body_bytes) > MAX_ROUTE_CACHE_BODY_BYTES {
+        problems.push(format!(
+            "{field}.cache: max_entries multiplied by max_body_bytes must not exceed {MAX_ROUTE_CACHE_BODY_BYTES}"
         ));
     }
 }
@@ -303,6 +338,11 @@ fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<S
     if upstream.endpoints.is_empty() {
         problems.push(format!(
             "{field}.endpoints: at least one endpoint is required"
+        ));
+    }
+    if upstream.endpoints.len() > MAX_ENDPOINTS_PER_POOL {
+        problems.push(format!(
+            "{field}.endpoints: must not contain more than {MAX_ENDPOINTS_PER_POOL} endpoints"
         ));
     }
     if upstream.connect_timeout_ms == 0 || upstream.concurrency_limit == 0 {
@@ -340,6 +380,7 @@ fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<S
             ));
         }
     }
+    validate_weighted_schedule(upstream, &field, problems);
     validate_upstream_health(upstream, &field, problems);
     let circuit = &upstream.circuit_breaker;
     if circuit.failure_threshold == 0
@@ -351,6 +392,39 @@ fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<S
             "{field}.circuit_breaker: thresholds and timeout must be greater than zero"
         ));
     }
+}
+
+fn validate_weighted_schedule(upstream: &UpstreamConfig, field: &str, problems: &mut Vec<String>) {
+    if upstream.load_balancing != LoadBalancingPolicy::WeightedRoundRobin
+        || upstream.endpoints.is_empty()
+    {
+        return;
+    }
+    let divisor = upstream
+        .endpoints
+        .iter()
+        .map(|endpoint| endpoint.weight)
+        .reduce(greatest_common_divisor)
+        .unwrap_or(1);
+    let slots = upstream
+        .endpoints
+        .iter()
+        .map(|endpoint| u64::from(endpoint.weight / divisor))
+        .sum::<u64>();
+    if slots > MAX_WEIGHTED_SCHEDULE_SLOTS {
+        problems.push(format!(
+            "{field}.endpoints: normalized weighted schedule requires {slots} slots; maximum is {MAX_WEIGHTED_SCHEDULE_SLOTS}"
+        ));
+    }
+}
+
+const fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
 }
 
 fn validate_upstream_health(upstream: &UpstreamConfig, field: &str, problems: &mut Vec<String>) {
@@ -380,6 +454,16 @@ fn validate_upstream_health(upstream: &UpstreamConfig, field: &str, problems: &m
 }
 
 fn validate_authentication(config: &GatewayConfig, problems: &mut Vec<String>) {
+    if config.authentication.api_key_sha256.len() > MAX_API_KEYS {
+        problems.push(format!(
+            "authentication.api_key_sha256: must not contain more than {MAX_API_KEYS} digests"
+        ));
+    }
+    if config.authentication.jwt_providers.len() > MAX_JWT_PROVIDERS {
+        problems.push(format!(
+            "authentication.jwt_providers: must not contain more than {MAX_JWT_PROVIDERS} providers"
+        ));
+    }
     for (index, digest) in config.authentication.api_key_sha256.iter().enumerate() {
         if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             problems.push(format!(

@@ -96,6 +96,30 @@ fn authenticated_and_unbounded_cache_policies_are_rejected() {
 }
 
 #[test]
+fn cache_memory_envelope_is_bounded() {
+    let invalid = MINIMAL.replace(
+        "upstream: api",
+        "upstream: api\n    cache:\n      ttl_seconds: 60\n      max_entries: 10000\n      max_body_bytes: 65536",
+    );
+
+    let error = parse(&invalid).expect_err("aggregate cache memory should be bounded");
+
+    assert!(error.to_string().contains("multiplied by max_body_bytes"));
+}
+
+#[test]
+fn pathological_weighted_schedules_are_rejected() {
+    let invalid = MINIMAL.replace(
+        "api:\n    endpoints:\n      - url: http://127.0.0.1:9001",
+        "api:\n    load_balancing: weighted_round_robin\n    endpoints:\n      - url: http://127.0.0.1:9001\n        weight: 100000\n      - url: http://127.0.0.1:9002\n        weight: 1",
+    );
+
+    let error = parse(&invalid).expect_err("weighted schedule allocation should be bounded");
+
+    assert!(error.to_string().contains("normalized weighted schedule"));
+}
+
+#[test]
 fn gateway_rate_limit_is_an_aggregate_bucket() {
     let invalid = MINIMAL.replace(
         "redis: null",

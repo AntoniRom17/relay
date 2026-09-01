@@ -26,8 +26,8 @@ routes:
       distributed: true
     cache:
       ttl_seconds: 10
-      max_entries: 1000
-      max_body_bytes: 1048576
+      max_entries: 256
+      max_body_bytes: 262144
     max_body_bytes: 1048576
     concurrency_limit: 512
 

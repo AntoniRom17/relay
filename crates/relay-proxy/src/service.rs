@@ -569,7 +569,7 @@ fn cache_read_plan<B>(
         return None;
     }
     let capacity = usize::try_from(policy.max_entries).ok()?;
-    let cache = registry.route(&plan.route.name, capacity);
+    let cache = registry.route(&plan.route.name, capacity)?;
     let key = format!(
         "{}\n{}\n{}",
         plan.route.name,

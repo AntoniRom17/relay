@@ -64,17 +64,29 @@ struct RouteCache {
 }
 
 /// Lazily-created, per-route caches whose capacities follow the live configuration.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CacheRegistry {
     routes: DashMap<String, RouteCache>,
+    count: AtomicUsize,
+    max_routes: usize,
 }
 
 impl CacheRegistry {
+    /// Creates a registry that refuses to retain more than `max_routes` cache namespaces.
+    pub fn new(max_routes: usize) -> Self {
+        Self {
+            routes: DashMap::new(),
+            count: AtomicUsize::new(0),
+            max_routes,
+        }
+    }
+
     /// Returns a route cache with exactly the requested capacity.
     ///
     /// A capacity change replaces the namespace atomically for new requests. Existing
-    /// response streams retain their previous cache until they complete.
-    pub fn route(&self, route: &str, max_entries: usize) -> Arc<ResponseCache> {
+    /// response streams retain their previous cache until they complete. Returns `None` rather
+    /// than allocating an unbounded namespace when the registry is full.
+    pub fn route(&self, route: &str, max_entries: usize) -> Option<Arc<ResponseCache>> {
         match self.routes.entry(route.to_owned()) {
             Entry::Occupied(mut entry) => {
                 if entry.get().max_entries != max_entries {
@@ -83,17 +95,40 @@ impl CacheRegistry {
                         cache: Arc::new(ResponseCache::new(max_entries)),
                     });
                 }
-                Arc::clone(&entry.get().cache)
+                Some(Arc::clone(&entry.get().cache))
             }
-            Entry::Vacant(entry) => Arc::clone(
-                &entry
-                    .insert(RouteCache {
-                        max_entries,
-                        cache: Arc::new(ResponseCache::new(max_entries)),
+            Entry::Vacant(entry) => {
+                self.count
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        (count < self.max_routes).then_some(count + 1)
                     })
-                    .cache,
-            ),
+                    .ok()?;
+                Some(Arc::clone(
+                    &entry
+                        .insert(RouteCache {
+                            max_entries,
+                            cache: Arc::new(ResponseCache::new(max_entries)),
+                        })
+                        .cache,
+                ))
+            }
         }
+    }
+
+    /// Returns the number of route namespaces retained across runtime generations.
+    pub fn len(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Returns whether no route namespace has been created.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Default for CacheRegistry {
+    fn default() -> Self {
+        Self::new(10_000)
     }
 }
 
@@ -211,14 +246,27 @@ mod tests {
     #[test]
     fn registry_isolates_routes_and_replaces_changed_capacities() {
         let registry = CacheRegistry::default();
-        let first = registry.route("first", 1);
-        let second = registry.route("second", 1);
+        let first = registry.route("first", 1).expect("namespace capacity");
+        let second = registry.route("second", 1).expect("namespace capacity");
         assert!(first.insert("key".to_owned(), response(Duration::from_secs(10))));
         assert!(second.get("key").is_none());
 
-        let resized = registry.route("first", 2);
+        let resized = registry.route("first", 2).expect("existing namespace");
         assert!(resized.get("key").is_none());
         assert!(!Arc::ptr_eq(&first, &resized));
-        assert!(Arc::ptr_eq(&resized, &registry.route("first", 2)));
+        assert!(Arc::ptr_eq(
+            &resized,
+            &registry.route("first", 2).expect("existing namespace")
+        ));
+    }
+
+    #[test]
+    fn registry_bounds_namespaces_across_route_churn() {
+        let registry = CacheRegistry::new(1);
+
+        assert!(registry.route("first", 1).is_some());
+        assert!(registry.route("second", 1).is_none());
+        assert!(registry.route("first", 2).is_some());
+        assert_eq!(registry.len(), 1);
     }
 }

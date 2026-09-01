@@ -394,10 +394,10 @@ const fn default_route_concurrency() -> usize {
     1_024
 }
 const fn default_cache_entries() -> u64 {
-    10_000
+    1_024
 }
 const fn default_cache_body_bytes() -> usize {
-    1024 * 1024
+    256 * 1024
 }
 const fn default_connect_timeout_ms() -> u64 {
     3_000

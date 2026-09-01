@@ -69,5 +69,5 @@ source file remains sensitive because Redis URLs may contain credentials.
 Validation aggregates independent failures so a deployment can fix them in one pass. It rejects,
 among other cases, duplicate listeners or route names, unknown pools and JWT providers, invalid
 paths/methods/headers, zero bounds, invalid retry statuses, credential-bearing upstream URLs,
-distributed limits without Redis, cache bodies over 16 MiB, caches over 100,000 entries, and
-remote admin binds without explicit opt-in.
+distributed limits without Redis, oversized cache memory envelopes, excessive configuration
+cardinality, and remote admin binds without explicit opt-in.
