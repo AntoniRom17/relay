@@ -21,8 +21,10 @@ relay-core = { path = "../relay-core" }
 relay-limits = { path = "../relay-limits" }
 relay-observability = { path = "../relay-observability" }
 relay-proxy = { path = "../relay-proxy" }
+relay-upstream = { path = "../relay-upstream" }
 serde_yaml.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 
 [lints]

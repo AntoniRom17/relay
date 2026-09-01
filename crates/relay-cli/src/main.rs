@@ -9,7 +9,8 @@ use relay_control::ControlPlane;
 use relay_core::Shutdown;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::{Metrics, init_logging};
-use relay_proxy::{ProxyService, RuntimeState, RuntimeStore, serve_http};
+use relay_proxy::{HyperHealthProbe, ProxyService, RuntimeState, RuntimeStore, serve_http};
+use relay_upstream::{HealthProbe, spawn_health_checks};
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
@@ -130,6 +131,14 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
         .min()
         .map_or(Duration::from_secs(3), Duration::from_millis);
     let mut servers = JoinSet::new();
+    {
+        let runtime = Arc::clone(&runtime);
+        let metrics = metrics.clone();
+        let shutdown = shutdown.clone();
+        servers.spawn(async move {
+            supervise_health_checks(runtime, metrics, connect_timeout, shutdown).await
+        });
+    }
     {
         let runtime = Arc::clone(&runtime);
         let metrics = metrics.clone();
@@ -336,4 +345,75 @@ fn ensure_reload_compatible(
         );
     }
     Ok(())
+}
+
+async fn supervise_health_checks(
+    runtime: Arc<RuntimeStore>,
+    metrics: Metrics,
+    connect_timeout: Duration,
+    shutdown: Shutdown,
+) -> anyhow::Result<()> {
+    let probe: Arc<dyn HealthProbe> = Arc::new(HyperHealthProbe::new(connect_timeout));
+    let mut active = runtime.load();
+    let mut generation_token = shutdown.child_token();
+    let mut tasks = launch_health_generation(&active, &probe, &generation_token);
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => {
+                generation_token.cancel();
+                join_health_tasks(tasks).await;
+                return Ok(());
+            }
+            _ = interval.tick() => {
+                for (name, pool) in active.pools() {
+                    for endpoint in pool.endpoints() {
+                        metrics.set_upstream_health(name, endpoint.url().as_str(), endpoint.is_healthy());
+                    }
+                }
+                let candidate = runtime.load();
+                if !Arc::ptr_eq(&active, &candidate) {
+                    generation_token.cancel();
+                    join_health_tasks(tasks).await;
+                    active = candidate;
+                    generation_token = shutdown.child_token();
+                    tasks = launch_health_generation(&active, &probe, &generation_token);
+                    info!("active health checks reconfigured after reload");
+                }
+            }
+        }
+    }
+}
+
+fn launch_health_generation(
+    runtime: &RuntimeState,
+    probe: &Arc<dyn HealthProbe>,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    runtime
+        .config()
+        .upstreams
+        .iter()
+        .filter_map(|(name, config)| {
+            let health = config.health_check.clone()?;
+            let pool = Arc::clone(runtime.pool(name)?);
+            Some(spawn_health_checks(
+                pool,
+                health,
+                Arc::clone(probe),
+                shutdown.child_token(),
+            ))
+        })
+        .collect()
+}
+
+async fn join_health_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
+    for task in tasks {
+        if let Err(error) = task.await {
+            error!(%error, "health-check task failed");
+        }
+    }
 }
