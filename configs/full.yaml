@@ -1,0 +1,95 @@
+# Production-oriented reference. Deployment tooling must mount TLS files and provide Redis/OTLP.
+listeners:
+  - address: 0.0.0.0:8443
+    tls:
+      certificate: /etc/relay/tls/tls.crt
+      private_key: /etc/relay/tls/tls.key
+    max_connections: 10000
+    request_timeout_ms: 30000
+    max_header_bytes: 32768
+
+admin:
+  enabled: true
+  address: 127.0.0.1:9090
+
+routes:
+  - name: public-catalog
+    host: api.example.com
+    path_prefix: /v1/catalog
+    methods: [GET, HEAD]
+    upstream: application
+    rate_limit:
+      requests_per_second: 100
+      burst_capacity: 200
+      key: client_ip
+      distributed: true
+    cache:
+      ttl_seconds: 30
+      max_entries: 10000
+      max_body_bytes: 1048576
+    retry:
+      max_attempts: 3
+      base_backoff_ms: 25
+      max_backoff_ms: 250
+      statuses: [502, 503, 504]
+    max_body_bytes: 1048576
+    concurrency_limit: 2000
+
+  - name: private-api
+    host: api.example.com
+    path_prefix: /v1
+    upstream: application
+    authentication:
+      type: api_key
+      header: x-api-key
+    rate_limit:
+      requests_per_second: 20
+      burst_capacity: 40
+      key: api_key
+      distributed: true
+    retry:
+      max_attempts: 1
+      base_backoff_ms: 0
+      max_backoff_ms: 0
+      statuses: []
+    max_body_bytes: 16777216
+    concurrency_limit: 1000
+
+upstreams:
+  application:
+    load_balancing: least_connections
+    connect_timeout_ms: 2000
+    concurrency_limit: 4000
+    endpoints:
+      - url: http://app-a:9001
+      - url: http://app-b:9001
+    health_check:
+      path: /health
+      interval_ms: 5000
+      timeout_ms: 1000
+      expected_status_min: 200
+      expected_status_max: 299
+      healthy_threshold: 2
+      unhealthy_threshold: 3
+    circuit_breaker:
+      failure_threshold: 8
+      recovery_timeout_ms: 30000
+      half_open_probe_limit: 2
+      success_threshold: 3
+
+authentication:
+  api_key_sha256:
+    - bbff4a4dc5895cc368930102d33b92ad644f6aaa796e912bbdca2e60a2cefe0b
+observability:
+  log_filter: relay=info,relay_proxy=debug
+  json_logs: true
+  otlp_endpoint: http://otel-collector:4317
+redis:
+  url: redis://redis:6379/
+  key_prefix: relay:production
+gateway_rate_limit:
+  requests_per_second: 5000
+  burst_capacity: 10000
+  key: route
+  distributed: true
+shutdown_grace_ms: 30000
