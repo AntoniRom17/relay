@@ -77,3 +77,18 @@ fn routes_must_reference_existing_upstreams() {
             .contains("unknown upstream pool `missing`")
     );
 }
+
+#[test]
+fn authenticated_and_unbounded_cache_policies_are_rejected() {
+    let invalid = MINIMAL.replace(
+        "upstream: api",
+        "upstream: api\n    authentication:\n      type: api_key\n    cache:\n      ttl_seconds: 60\n      max_entries: 100001\n      max_body_bytes: 16777217",
+    );
+
+    let error = parse(&invalid).expect_err("unsafe cache policy should fail");
+    let message = error.to_string();
+
+    assert!(message.contains("authenticated routes are not cacheable"));
+    assert!(message.contains("max_entries"));
+    assert!(message.contains("max_body_bytes"));
+}

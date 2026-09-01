@@ -1278,6 +1278,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay-cache"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "http",
+]
+
+[[package]]
 name = "relay-cli"
 version = "0.1.0"
 dependencies = [
@@ -1289,6 +1298,7 @@ dependencies = [
  "relay-limits",
  "relay-observability",
  "relay-proxy",
+ "relay-tls",
  "relay-upstream",
  "serde_yaml",
  "tokio",
@@ -1381,11 +1391,13 @@ dependencies = [
  "relay-limits",
  "relay-observability",
  "relay-routing",
+ "relay-tls",
  "relay-upstream",
  "rustls",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
  "uuid",

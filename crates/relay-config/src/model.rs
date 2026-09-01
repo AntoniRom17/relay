@@ -196,6 +196,9 @@ pub struct CacheConfig {
     /// Maximum entries retained by the bounded in-memory cache.
     #[serde(default = "default_cache_entries")]
     pub max_entries: u64,
+    /// Largest response body retained while still streaming it downstream.
+    #[serde(default = "default_cache_body_bytes")]
+    pub max_body_bytes: usize,
 }
 
 /// Authentication secrets and trust material.
@@ -386,6 +389,9 @@ const fn default_route_concurrency() -> usize {
 }
 const fn default_cache_entries() -> u64 {
     10_000
+}
+const fn default_cache_body_bytes() -> usize {
+    1024 * 1024
 }
 const fn default_connect_timeout_ms() -> u64 {
     3_000

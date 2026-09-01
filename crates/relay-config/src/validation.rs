@@ -187,6 +187,26 @@ pub fn validate(config: &GatewayConfig) -> Result<(), ConfigError> {
                 "{field}.concurrency_limit: must be greater than zero"
             ));
         }
+        if let Some(cache) = &route.cache {
+            if cache.ttl_seconds == 0 || cache.max_entries == 0 || cache.max_body_bytes == 0 {
+                problems.push(format!(
+                    "{field}.cache: TTL, entry capacity, and body limit must be greater than zero"
+                ));
+            }
+            if route.authentication.is_some() {
+                problems.push(format!(
+                    "{field}.cache: authenticated routes are not cacheable without an explicit private-cache policy"
+                ));
+            }
+            if cache.max_entries > 100_000 {
+                problems.push(format!("{field}.cache.max_entries: must not exceed 100000"));
+            }
+            if cache.max_body_bytes > 16 * 1024 * 1024 {
+                problems.push(format!(
+                    "{field}.cache.max_body_bytes: must not exceed 16777216"
+                ));
+            }
+        }
     }
 
     for (name, upstream) in &config.upstreams {
