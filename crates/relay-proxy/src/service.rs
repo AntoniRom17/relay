@@ -23,7 +23,7 @@ use relay_config::{AuthPolicyConfig, CacheConfig, RateLimitConfig, RateLimitKey,
 use relay_core::GatewayError;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::{Metrics, inject_context, set_parent_from_headers};
-use relay_upstream::{PoolSelectionError, UpstreamLease};
+use relay_upstream::{CircuitState, PoolSelectionError, UpstreamLease};
 use serde_json::json;
 use tokio::time;
 use tracing::{Instrument as _, info, info_span, warn};
@@ -126,6 +126,9 @@ impl ProxyService {
             status = tracing::field::Empty,
             latency_ms = tracing::field::Empty,
             identity = tracing::field::Empty,
+            retries = tracing::field::Empty,
+            rate_limit = tracing::field::Empty,
+            circuit_state = tracing::field::Empty,
         );
         set_parent_from_headers(&span, request.headers());
 
@@ -233,6 +236,7 @@ impl ProxyService {
 
         loop {
             attempt += 1;
+            tracing::Span::current().record("retries", attempt - 1);
             let upstream = plan.pool.try_select().map_err(|error| match error {
                 PoolSelectionError::NoHealthyEndpoint => GatewayError::NoHealthyUpstream,
                 PoolSelectionError::Overloaded => GatewayError::Overloaded,
@@ -257,10 +261,18 @@ impl ProxyService {
             )
             .map_err(|_| GatewayError::Internal)?;
             inject_context(upstream_request.headers_mut());
+            tracing::Span::current().record(
+                "circuit_state",
+                circuit_state_name(plan.circuit.snapshot().state),
+            );
             let circuit_permit = plan
                 .circuit
                 .try_acquire()
                 .map_err(|_| GatewayError::CircuitOpen)?;
+            tracing::Span::current().record(
+                "circuit_state",
+                circuit_state_name(plan.circuit.snapshot().state),
+            );
             let upstream_started = Instant::now();
             let response =
                 match time::timeout(self.request_timeout, self.client.request(upstream_request))
@@ -408,11 +420,21 @@ impl ProxyService {
                 .map_err(|_| GatewayError::Overloaded)?
         };
         if decision.allowed {
+            tracing::Span::current().record("rate_limit", "allowed");
             Ok(())
         } else {
+            tracing::Span::current().record("rate_limit", "rejected");
             self.metrics.rate_limited(route, scope);
             Err(GatewayError::RateLimited)
         }
+    }
+}
+
+const fn circuit_state_name(state: CircuitState) -> &'static str {
+    match state {
+        CircuitState::Closed => "closed",
+        CircuitState::Open => "open",
+        CircuitState::HalfOpen => "half_open",
     }
 }
 
