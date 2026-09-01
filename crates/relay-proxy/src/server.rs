@@ -1,8 +1,8 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use hyper::service::service_fn;
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto,
 };
 use relay_config::ListenerConfig;
@@ -50,6 +50,8 @@ async fn serve(
             source,
         })?;
     let connection_limit = Arc::new(tokio::sync::Semaphore::new(config.max_connections));
+    let max_header_bytes = config.max_header_bytes;
+    let header_timeout = Duration::from_millis(config.request_timeout_ms.min(10_000));
     let mut connections = JoinSet::new();
     info!(address = %config.address, "data-plane listener started");
 
@@ -73,14 +75,14 @@ async fn serve(
                     if let Some(acceptor) = tls {
                         match acceptor.accept(stream).await {
                             Ok(stream) => {
-                                run_connection(stream, proxy, peer, "https", connection_shutdown).await;
+                                run_connection(stream, proxy, peer, "https", connection_shutdown, max_header_bytes, header_timeout).await;
                             }
                             Err(error) => {
                                 debug!(peer = %peer, %error, "TLS handshake failed");
                             }
                         }
                     } else {
-                        run_connection(stream, proxy, peer, "http", connection_shutdown).await;
+                        run_connection(stream, proxy, peer, "http", connection_shutdown, max_header_bytes, header_timeout).await;
                     }
                 });
             }
@@ -112,6 +114,8 @@ async fn run_connection<IO>(
     peer: std::net::SocketAddr,
     protocol: &'static str,
     shutdown: tokio_util::sync::CancellationToken,
+    max_header_bytes: usize,
+    header_timeout: Duration,
 ) where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -120,7 +124,15 @@ async fn run_connection<IO>(
         async move { Ok::<_, Infallible>(proxy.handle(request, peer.ip(), protocol).await) }
     });
     let io = TokioIo::new(stream);
-    let builder = auto::Builder::new(TokioExecutor::new());
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_timeout)
+        .max_buf_size(max_header_bytes.max(8 * 1024));
+    builder
+        .http2()
+        .max_header_list_size(u32::try_from(max_header_bytes).unwrap_or(u32::MAX));
     let connection = builder.serve_connection_with_upgrades(io, service);
     tokio::pin!(connection);
     tokio::select! {

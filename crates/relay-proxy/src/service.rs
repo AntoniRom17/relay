@@ -10,7 +10,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::{Body, Frame};
-use http_body_util::{BodyExt as _, Empty, Full, combinators::UnsyncBoxBody};
+use http_body_util::{BodyExt as _, Empty, Full, Limited, combinators::UnsyncBoxBody};
 use hyper::body::Incoming;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
@@ -168,6 +168,9 @@ impl ProxyService {
         let request_method = request.method().as_str().to_owned();
         let original_uri = request.uri().clone();
         tracing::Span::current().record("route", plan.route.name.as_str());
+        if request_body_exceeds_limit(&request, plan.route.max_body_bytes) {
+            return Err(GatewayError::RequestTooLarge);
+        }
         let mut api_key_limit_key = None;
         if let Some(policy) = &plan.route.authentication {
             let identity = runtime
@@ -215,7 +218,7 @@ impl ProxyService {
         let mut streaming_request = if replayable {
             None
         } else {
-            Some(box_incoming_request(request))
+            Some(box_incoming_request(request, plan.route.max_body_bytes))
         };
         let mut attempt = 0;
 
@@ -257,6 +260,9 @@ impl ProxyService {
                     Ok(Err(error)) => {
                         circuit_permit.failure();
                         endpoint.record_passive_failure(3);
+                        if error_chain_contains_length_limit(&error) {
+                            return Err(GatewayError::RequestTooLarge);
+                        }
                         self.metrics.upstream_failure(
                             plan.pool.name(),
                             &endpoint_name,
@@ -713,11 +719,37 @@ impl RequestTemplate {
     }
 }
 
-fn box_incoming_request(request: Request<Incoming>) -> Request<ProxyBody> {
-    request.map(|body| {
-        body.map_err(|error| -> BoxError { Box::new(error) })
-            .boxed_unsync()
-    })
+fn box_incoming_request(request: Request<Incoming>, max_body_bytes: u64) -> Request<ProxyBody> {
+    let limit = usize::try_from(max_body_bytes).unwrap_or(usize::MAX);
+    request.map(|body| Limited::new(body, limit).boxed_unsync())
+}
+
+fn request_body_exceeds_limit<B: Body>(request: &Request<B>, max_body_bytes: u64) -> bool {
+    request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > max_body_bytes)
+        || request
+            .body()
+            .size_hint()
+            .upper()
+            .is_some_and(|length| length > max_body_bytes)
+}
+
+fn error_chain_contains_length_limit(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if current
+            .downcast_ref::<http_body_util::LengthLimitError>()
+            .is_some()
+        {
+            return true;
+        }
+        source = current.source();
+    }
+    false
 }
 
 fn empty_body() -> ProxyBody {
@@ -892,6 +924,31 @@ mod tests {
         assert!(is_replayable(&put));
         assert!(!is_replayable(&post));
         assert!(!is_replayable(&get_with_body));
+    }
+
+    #[test]
+    fn declared_or_known_request_bodies_over_the_route_limit_are_rejected() {
+        let declared = Request::post("/")
+            .header(header::CONTENT_LENGTH, "9")
+            .body(Empty::<Bytes>::new())
+            .expect("request");
+        let known = Request::post("/")
+            .body(Full::new(Bytes::from_static(b"123456789")))
+            .expect("request");
+
+        assert!(request_body_exceeds_limit(&declared, 8));
+        assert!(request_body_exceeds_limit(&known, 8));
+        assert!(!request_body_exceeds_limit(&known, 9));
+    }
+
+    #[tokio::test]
+    async fn streaming_limit_errors_are_recognized_through_the_error_chain() {
+        let error = Limited::new(Full::new(Bytes::from_static(b"oversized")), 3)
+            .collect()
+            .await
+            .expect_err("body must exceed its limit");
+
+        assert!(error_chain_contains_length_limit(error.as_ref()));
     }
 
     #[test]
