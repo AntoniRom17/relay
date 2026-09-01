@@ -443,6 +443,24 @@ impl<B> CachingBody<B> {
         }
         self.buffer.clear();
     }
+
+    fn finish(&mut self) {
+        if let Some(write) = self.write.take() {
+            let cached = CachedResponse::new(
+                write.status,
+                write.version,
+                write.headers,
+                self.buffer.split().freeze(),
+                write.ttl,
+            );
+            let outcome = if write.cache.insert(write.key, cached) {
+                "stored"
+            } else {
+                "capacity"
+            };
+            write.metrics.cache_event(&write.route, outcome);
+        }
+    }
 }
 
 impl<B> Body for CachingBody<B>
@@ -468,23 +486,12 @@ where
                         self.buffer.extend_from_slice(data);
                     }
                 }
+                if self.inner.is_end_stream() {
+                    self.finish();
+                }
             }
             Poll::Ready(None) => {
-                if let Some(write) = self.write.take() {
-                    let cached = CachedResponse::new(
-                        write.status,
-                        write.version,
-                        write.headers,
-                        self.buffer.split().freeze(),
-                        write.ttl,
-                    );
-                    let outcome = if write.cache.insert(write.key, cached) {
-                        "stored"
-                    } else {
-                        "capacity"
-                    };
-                    write.metrics.cache_event(&write.route, outcome);
-                }
+                self.finish();
             }
             Poll::Pending | Poll::Ready(Some(Err(_))) => {}
         }
