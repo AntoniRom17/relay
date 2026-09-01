@@ -109,3 +109,20 @@ fn gateway_rate_limit_is_an_aggregate_bucket() {
     assert!(message.contains("only route is valid"));
     assert!(message.contains("requires a top-level redis section"));
 }
+
+#[test]
+fn remote_admin_binding_requires_explicit_opt_in() {
+    let unsafe_default = MINIMAL.replace("routes:", "admin:\n  address: 0.0.0.0:9090\nroutes:");
+    assert!(
+        parse(&unsafe_default)
+            .expect_err("remote admin should be rejected")
+            .to_string()
+            .contains("allow_remote")
+    );
+
+    let explicit = unsafe_default.replace(
+        "address: 0.0.0.0:9090",
+        "address: 0.0.0.0:9090\n  allow_remote: true",
+    );
+    parse(&explicit).expect("explicit remote admin opt-in should validate");
+}

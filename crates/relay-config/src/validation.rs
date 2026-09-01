@@ -100,9 +100,12 @@ pub fn validate(config: &GatewayConfig) -> Result<(), ConfigError> {
     if config.admin.enabled && listener_addresses.contains(&config.admin.address) {
         problems.push("admin.address: must not overlap a data-plane listener".to_owned());
     }
-    if config.admin.enabled && !config.admin.address.ip().is_loopback() {
+    if config.admin.enabled
+        && !config.admin.address.ip().is_loopback()
+        && !config.admin.allow_remote
+    {
         problems.push(
-            "admin.address: must use a loopback address; place authenticated infrastructure in front for remote access"
+            "admin.address: must use loopback unless admin.allow_remote is explicitly true"
                 .to_owned(),
         );
     }

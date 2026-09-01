@@ -69,6 +69,8 @@ pub struct AdminConfig {
     pub enabled: bool,
     /// Loopback address used by default to avoid accidental exposure.
     pub address: SocketAddr,
+    /// Explicitly allow a non-loopback bind for network-isolated container deployments.
+    pub allow_remote: bool,
 }
 
 impl Default for AdminConfig {
@@ -78,6 +80,7 @@ impl Default for AdminConfig {
             address: "127.0.0.1:9090"
                 .parse()
                 .expect("static socket address is valid"),
+            allow_remote: false,
         }
     }
 }
