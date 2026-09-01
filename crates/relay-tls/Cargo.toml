@@ -12,11 +12,9 @@ repository.workspace = true
 arc-swap.workspace = true
 relay-config = { path = "../relay-config" }
 rustls.workspace = true
-rustls-pemfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 
 [lints]
 workspace = true
-

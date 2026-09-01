@@ -1,13 +1,18 @@
 use std::{
     fs::File,
-    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use arc_swap::ArcSwap;
 use relay_config::TlsConfig;
-use rustls::{ServerConfig, pki_types::PrivateKeyDer};
+use rustls::{
+    ServerConfig,
+    pki_types::{
+        CertificateDer, PrivateKeyDer,
+        pem::{Error as PemError, PemObject},
+    },
+};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
@@ -66,8 +71,8 @@ fn load_server_config(config: &TlsConfig) -> Result<Arc<ServerConfig>, TlsLoadEr
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let certificate_path = PathBuf::from(&config.certificate);
     let key_path = PathBuf::from(&config.private_key);
-    let mut certificate_reader = BufReader::new(open(&certificate_path)?);
-    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+    let certificate_reader = open(&certificate_path)?;
+    let certificates = CertificateDer::pem_reader_iter(certificate_reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|source| TlsLoadError::Pem {
             path: certificate_path.clone(),
@@ -78,20 +83,26 @@ fn load_server_config(config: &TlsConfig) -> Result<Arc<ServerConfig>, TlsLoadEr
             path: certificate_path,
         });
     }
-    let mut key_reader = BufReader::new(open(&key_path)?);
-    let private_key = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|source| TlsLoadError::Pem {
-            path: key_path.clone(),
-            source,
-        })?
-        .ok_or_else(|| TlsLoadError::MissingPrivateKey {
-            path: key_path.clone(),
-        })?;
+    let key_reader = open(&key_path)?;
+    let private_key = match PrivateKeyDer::from_pem_reader(key_reader) {
+        Ok(private_key) => private_key,
+        Err(PemError::NoItemsFound) => {
+            return Err(TlsLoadError::MissingPrivateKey {
+                path: key_path.clone(),
+            });
+        }
+        Err(source) => {
+            return Err(TlsLoadError::Pem {
+                path: key_path.clone(),
+                source,
+            });
+        }
+    };
     build_config(certificates, private_key, &key_path)
 }
 
 fn build_config(
-    certificates: Vec<rustls::pki_types::CertificateDer<'static>>,
+    certificates: Vec<CertificateDer<'static>>,
     private_key: PrivateKeyDer<'static>,
     key_path: &Path,
 ) -> Result<Arc<ServerConfig>, TlsLoadError> {
@@ -130,7 +141,7 @@ pub enum TlsLoadError {
         /// File path.
         path: PathBuf,
         /// PEM decoding error.
-        source: std::io::Error,
+        source: PemError,
     },
     /// The certificate file contained no certificates.
     #[error("TLS certificate file {} contains no certificates", path.display())]
