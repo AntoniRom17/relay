@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay
+  labels:
+    app.kubernetes.io/name: relay
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: relay
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: ghcr.io/antonirom17/relay:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: admin
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: admin
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 2
+            failureThreshold: 15
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 3"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/relay/relay.yaml
+              subPath: relay.yaml
+              readOnly: true
+            - name: tls
+              mountPath: /etc/relay/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: relay-config
+        - name: tls
+          secret:
+            secretName: relay-tls
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: relay
+  labels:
+    app.kubernetes.io/name: relay
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: relay
+  ports:
+    - name: https
+      port: 443
+      targetPort: https

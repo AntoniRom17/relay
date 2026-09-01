@@ -1,0 +1,63 @@
+listeners:
+  - address: 0.0.0.0:8443
+    tls:
+      certificate: /etc/relay/tls/tls.crt
+      private_key: /etc/relay/tls/tls.key
+    max_connections: 10000
+    request_timeout_ms: 30000
+    max_header_bytes: 32768
+
+admin:
+  enabled: true
+  address: 0.0.0.0:9090
+  allow_remote: true
+
+routes:
+  - name: application
+    path_prefix: /
+    upstream: application
+    retry:
+      max_attempts: 2
+      base_backoff_ms: 25
+      max_backoff_ms: 250
+      statuses: [502, 503, 504]
+    rate_limit:
+      requests_per_second: 250
+      burst_capacity: 500
+      key: client_ip
+      distributed: false
+    max_body_bytes: 16777216
+    concurrency_limit: 2000
+
+upstreams:
+  application:
+    endpoints:
+      - url: http://application.default.svc.cluster.local:8080
+    load_balancing: least_connections
+    connect_timeout_ms: 2000
+    concurrency_limit: 4000
+    health_check:
+      path: /health
+      interval_ms: 5000
+      timeout_ms: 1000
+      expected_status_min: 200
+      expected_status_max: 299
+      healthy_threshold: 2
+      unhealthy_threshold: 3
+    circuit_breaker:
+      failure_threshold: 8
+      recovery_timeout_ms: 30000
+      half_open_probe_limit: 2
+      success_threshold: 3
+
+authentication: {}
+observability:
+  log_filter: relay=info
+  json_logs: true
+redis: null
+gateway_rate_limit:
+  requests_per_second: 5000
+  burst_capacity: 10000
+  key: route
+  distributed: false
+shutdown_grace_ms: 30000
