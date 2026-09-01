@@ -2,7 +2,7 @@
 
 use relay_config::{ConfigError, LoadBalancingPolicy, parse};
 
-const MINIMAL: &str = r#"
+const MINIMAL: &str = r"
 listeners:
   - address: 127.0.0.1:8080
 routes:
@@ -15,7 +15,7 @@ upstreams:
     endpoints:
       - url: http://127.0.0.1:9001
 redis: null
-"#;
+";
 
 #[test]
 fn minimal_configuration_applies_safe_defaults() {
