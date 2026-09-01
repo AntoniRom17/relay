@@ -165,6 +165,10 @@ impl ProxyService {
         started: Instant,
     ) -> Result<Response<ProxyBody>, GatewayError> {
         let runtime = self.runtime.load();
+        if let Some(limit) = &runtime.config().gateway_rate_limit {
+            self.enforce_rate_limit("gateway", limit, client_ip, None)
+                .await?;
+        }
         let plan = runtime.plan(&request)?;
         let request_method = request.method().as_str().to_owned();
         let original_uri = request.uri().clone();
@@ -370,7 +374,14 @@ impl ProxyService {
         api_key: Option<&str>,
     ) -> Result<(), GatewayError> {
         let (scope, identity) = match config.key {
-            RateLimitKey::Route => ("route", "global".to_owned()),
+            RateLimitKey::Route => (
+                if route == "gateway" {
+                    "gateway"
+                } else {
+                    "route"
+                },
+                "global".to_owned(),
+            ),
             RateLimitKey::ClientIp => ("client_ip", client_ip.to_string()),
             RateLimitKey::ApiKey => (
                 "api_key",

@@ -24,6 +24,9 @@ pub struct GatewayConfig {
     pub observability: ObservabilityConfig,
     /// Optional Redis connection used for distributed policies.
     pub redis: Option<RedisConfig>,
+    /// Optional gateway-wide aggregate rate limit applied before routing.
+    #[serde(default)]
+    pub gateway_rate_limit: Option<RateLimitConfig>,
     /// Maximum time allowed for in-flight work during shutdown.
     #[serde(default = "default_shutdown_grace_ms")]
     pub shutdown_grace_ms: u64,

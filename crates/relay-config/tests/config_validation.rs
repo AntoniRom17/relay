@@ -1,3 +1,5 @@
+//! Configuration API defaults and semantic validation regressions.
+
 use relay_config::{ConfigError, LoadBalancingPolicy, parse};
 
 const MINIMAL: &str = r#"
@@ -91,4 +93,19 @@ fn authenticated_and_unbounded_cache_policies_are_rejected() {
     assert!(message.contains("authenticated routes are not cacheable"));
     assert!(message.contains("max_entries"));
     assert!(message.contains("max_body_bytes"));
+}
+
+#[test]
+fn gateway_rate_limit_is_an_aggregate_bucket() {
+    let invalid = MINIMAL.replace(
+        "redis: null",
+        "gateway_rate_limit:\n  requests_per_second: 0\n  burst_capacity: 10\n  key: client_ip\n  distributed: true\nredis: null",
+    );
+
+    let error = parse(&invalid).expect_err("invalid gateway limit should fail");
+    let message = error.to_string();
+
+    assert!(message.contains("rate and burst capacity"));
+    assert!(message.contains("only route is valid"));
+    assert!(message.contains("requires a top-level redis section"));
 }

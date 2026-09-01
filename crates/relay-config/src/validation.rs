@@ -54,6 +54,24 @@ pub fn validate(config: &GatewayConfig) -> Result<(), ConfigError> {
     if config.shutdown_grace_ms == 0 {
         problems.push("shutdown_grace_ms: must be greater than zero".to_owned());
     }
+    if let Some(limit) = &config.gateway_rate_limit {
+        if limit.requests_per_second == 0 || limit.burst_capacity == 0 {
+            problems.push(
+                "gateway_rate_limit: rate and burst capacity must be greater than zero".to_owned(),
+            );
+        }
+        if limit.distributed && config.redis.is_none() {
+            problems.push(
+                "gateway_rate_limit.distributed: requires a top-level redis section".to_owned(),
+            );
+        }
+        if limit.key != RateLimitKey::Route {
+            problems.push(
+                "gateway_rate_limit.key: only route is valid for the aggregate gateway bucket"
+                    .to_owned(),
+            );
+        }
+    }
 
     let mut listener_addresses = HashSet::new();
     for (index, listener) in config.listeners.iter().enumerate() {
