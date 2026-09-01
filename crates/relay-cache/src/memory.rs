@@ -1,4 +1,5 @@
 use std::{
+    sync::Arc,
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
@@ -54,6 +55,46 @@ pub struct ResponseCache {
     entries: DashMap<String, CachedResponse>,
     count: AtomicUsize,
     max_entries: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RouteCache {
+    max_entries: usize,
+    cache: Arc<ResponseCache>,
+}
+
+/// Lazily-created, per-route caches whose capacities follow the live configuration.
+#[derive(Debug, Default)]
+pub struct CacheRegistry {
+    routes: DashMap<String, RouteCache>,
+}
+
+impl CacheRegistry {
+    /// Returns a route cache with exactly the requested capacity.
+    ///
+    /// A capacity change replaces the namespace atomically for new requests. Existing
+    /// response streams retain their previous cache until they complete.
+    pub fn route(&self, route: &str, max_entries: usize) -> Arc<ResponseCache> {
+        match self.routes.entry(route.to_owned()) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().max_entries != max_entries {
+                    entry.insert(RouteCache {
+                        max_entries,
+                        cache: Arc::new(ResponseCache::new(max_entries)),
+                    });
+                }
+                Arc::clone(&entry.get().cache)
+            }
+            Entry::Vacant(entry) => Arc::clone(
+                &entry
+                    .insert(RouteCache {
+                        max_entries,
+                        cache: Arc::new(ResponseCache::new(max_entries)),
+                    })
+                    .cache,
+            ),
+        }
+    }
 }
 
 impl ResponseCache {
@@ -165,5 +206,19 @@ mod tests {
         assert!(cache.get("expired").is_none());
         assert!(cache.is_empty());
         assert!(cache.insert("replacement".to_owned(), response(Duration::from_secs(1))));
+    }
+
+    #[test]
+    fn registry_isolates_routes_and_replaces_changed_capacities() {
+        let registry = CacheRegistry::default();
+        let first = registry.route("first", 1);
+        let second = registry.route("second", 1);
+        assert!(first.insert("key".to_owned(), response(Duration::from_secs(10))));
+        assert!(second.get("key").is_none());
+
+        let resized = registry.route("first", 2);
+        assert!(resized.get("key").is_none());
+        assert!(!Arc::ptr_eq(&first, &resized));
+        assert!(Arc::ptr_eq(&resized, &registry.route("first", 2)));
     }
 }

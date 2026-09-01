@@ -2,4 +2,4 @@
 
 mod memory;
 
-pub use memory::{CachedResponse, ResponseCache};
+pub use memory::{CacheRegistry, CachedResponse, ResponseCache};
