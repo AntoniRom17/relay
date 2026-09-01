@@ -115,9 +115,7 @@ impl Authenticator {
             .ok_or(AuthError::MissingCredential)?
             .to_str()
             .map_err(|_| AuthError::InvalidCredential)?;
-        let token = authorization
-            .strip_prefix("Bearer ")
-            .ok_or(AuthError::InvalidCredential)?;
+        let token = bearer_token(authorization).ok_or(AuthError::InvalidCredential)?;
         let data = decode::<Value>(token, &provider.key, &provider.validation)
             .map_err(|_| AuthError::InvalidCredential)?;
         let subject = data
@@ -132,6 +130,17 @@ impl Authenticator {
             credential_hash: None,
         })
     }
+}
+
+fn bearer_token(authorization: &str) -> Option<&str> {
+    let (scheme, token) = authorization.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer")
+        || token.is_empty()
+        || token.bytes().any(|byte| byte.is_ascii_whitespace())
+    {
+        return None;
+    }
+    Some(token)
 }
 
 impl std::fmt::Debug for Authenticator {
@@ -245,6 +254,15 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive_but_token_whitespace_is_rejected() {
+        assert_eq!(bearer_token("bearer token"), Some("token"));
+        assert_eq!(bearer_token("BEARER token"), Some("token"));
+        assert_eq!(bearer_token("Basic token"), None);
+        assert_eq!(bearer_token("Bearer token extra"), None);
+        assert_eq!(bearer_token("Bearer "), None);
+    }
 
     fn api_authenticator(secret: &str) -> Authenticator {
         let digest = hex::encode(Sha256::digest(secret.as_bytes()));

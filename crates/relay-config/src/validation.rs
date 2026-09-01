@@ -294,6 +294,18 @@ fn validate_route_policies(
             "{field}.authentication.provider: unknown JWT provider `{provider}`"
         ));
     }
+    if let Some(AuthPolicyConfig::ApiKey { header }) = &route.authentication {
+        if header.parse::<HeaderName>().is_err() {
+            problems.push(format!(
+                "{field}.authentication.header: `{header}` is not a valid header name"
+            ));
+        }
+        if config.authentication.api_key_sha256.is_empty() {
+            problems.push(format!(
+                "{field}.authentication: API-key policy requires at least one authentication.api_key_sha256 digest"
+            ));
+        }
+    }
     validate_cache(route, field, problems);
 }
 
@@ -468,6 +480,23 @@ fn validate_authentication(config: &GatewayConfig, problems: &mut Vec<String>) {
         if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             problems.push(format!(
                 "authentication.api_key_sha256[{index}]: expected a 64-character SHA-256 hex digest"
+            ));
+        }
+    }
+    for (name, provider) in &config.authentication.jwt_providers {
+        if provider.issuer.trim().is_empty() {
+            problems.push(format!(
+                "authentication.jwt_providers.{name}.issuer: must not be empty"
+            ));
+        }
+        if provider.audience.trim().is_empty() {
+            problems.push(format!(
+                "authentication.jwt_providers.{name}.audience: must not be empty"
+            ));
+        }
+        if provider.public_key.trim().is_empty() {
+            problems.push(format!(
+                "authentication.jwt_providers.{name}.public_key: must not be empty"
             ));
         }
     }

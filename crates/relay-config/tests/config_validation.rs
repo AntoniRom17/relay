@@ -135,6 +135,20 @@ fn gateway_rate_limit_is_an_aggregate_bucket() {
 }
 
 #[test]
+fn api_key_routes_require_keys_and_a_valid_header() {
+    let invalid = MINIMAL.replace(
+        "upstream: api",
+        "upstream: api\n    authentication:\n      type: api_key\n      header: invalid header",
+    );
+
+    let error = parse(&invalid).expect_err("unusable authentication must fail at validation");
+    let message = error.to_string();
+
+    assert!(message.contains("not a valid header name"));
+    assert!(message.contains("requires at least one"));
+}
+
+#[test]
 fn remote_admin_binding_requires_explicit_opt_in() {
     let unsafe_default = MINIMAL.replace("routes:", "admin:\n  address: 0.0.0.0:9090\nroutes:");
     assert!(
