@@ -9,7 +9,7 @@ use relay_control::ControlPlane;
 use relay_core::Shutdown;
 use relay_limits::{LocalRateLimiter, RedisRateLimiter};
 use relay_observability::{Metrics, init_logging};
-use relay_proxy::{ProxyService, RuntimeState, serve_http};
+use relay_proxy::{ProxyService, RuntimeState, RuntimeStore, serve_http};
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
@@ -112,7 +112,7 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     reject_unavailable_listener_features(&config)?;
     let metrics = Metrics::new().context("failed to create metrics registry")?;
     let shutdown = Shutdown::new(Duration::from_millis(config.shutdown_grace_ms));
-    let runtime = Arc::new(RuntimeState::build(config.clone())?);
+    let runtime = Arc::new(RuntimeStore::new(RuntimeState::build(config.clone())?));
     let local_limiter = Arc::new(LocalRateLimiter::new(100_000));
     let redis_limiter = if config
         .routes

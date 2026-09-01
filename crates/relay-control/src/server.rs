@@ -9,7 +9,7 @@ use axum::{
 };
 use relay_core::Shutdown;
 use relay_observability::Metrics;
-use relay_proxy::RuntimeState;
+use relay_proxy::RuntimeStore;
 use serde::Serialize;
 use serde_json::json;
 use thiserror::Error;
@@ -23,14 +23,14 @@ pub struct ControlPlane {
 
 #[derive(Debug)]
 struct ControlState {
-    runtime: Arc<RuntimeState>,
+    runtime: Arc<RuntimeStore>,
     metrics: Metrics,
     started_at: Instant,
 }
 
 impl ControlPlane {
     /// Creates a control plane over the currently installed runtime state.
-    pub fn new(runtime: Arc<RuntimeState>, metrics: Metrics) -> Self {
+    pub fn new(runtime: Arc<RuntimeStore>, metrics: Metrics) -> Self {
         Self {
             state: Arc::new(ControlState {
                 runtime,
@@ -78,8 +78,8 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn ready(State(state): State<Arc<ControlState>>) -> Response {
-    let unavailable = state
-        .runtime
+    let runtime = state.runtime.load();
+    let unavailable = runtime
         .pools()
         .filter(|(_, pool)| {
             !pool
@@ -119,19 +119,20 @@ async fn metrics(State(state): State<Arc<ControlState>>) -> Response {
 }
 
 async fn status(State(state): State<Arc<ControlState>>) -> impl IntoResponse {
+    let runtime = state.runtime.load();
     Json(StatusView {
         status: "running",
         version: env!("CARGO_PKG_VERSION"),
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        routes: state.runtime.config().routes.len(),
-        upstreams: state.runtime.config().upstreams.len(),
+        routes: runtime.config().routes.len(),
+        upstreams: runtime.config().upstreams.len(),
     })
 }
 
 async fn routes(State(state): State<Arc<ControlState>>) -> impl IntoResponse {
+    let runtime = state.runtime.load();
     Json(
-        state
-            .runtime
+        runtime
             .config()
             .routes
             .iter()
@@ -150,9 +151,9 @@ async fn routes(State(state): State<Arc<ControlState>>) -> impl IntoResponse {
 }
 
 async fn upstreams(State(state): State<Arc<ControlState>>) -> impl IntoResponse {
+    let runtime = state.runtime.load();
     Json(
-        state
-            .runtime
+        runtime
             .pools()
             .map(|(_, pool)| UpstreamView::from_pool(pool))
             .collect::<Vec<_>>(),
@@ -160,7 +161,8 @@ async fn upstreams(State(state): State<Arc<ControlState>>) -> impl IntoResponse 
 }
 
 async fn upstream(Path(id): Path<String>, State(state): State<Arc<ControlState>>) -> Response {
-    state.runtime.pool(&id).map_or_else(
+    let runtime = state.runtime.load();
+    runtime.pool(&id).map_or_else(
         || {
             (
                 StatusCode::NOT_FOUND,
@@ -173,25 +175,24 @@ async fn upstream(Path(id): Path<String>, State(state): State<Arc<ControlState>>
 }
 
 async fn config(State(state): State<Arc<ControlState>>) -> impl IntoResponse {
+    let runtime = state.runtime.load();
     Json(ConfigView {
-        listeners: state
-            .runtime
+        listeners: runtime
             .config()
             .listeners
             .iter()
             .map(|listener| listener.address)
             .collect(),
-        admin: state.runtime.config().admin.address,
-        routes: state
-            .runtime
+        admin: runtime.config().admin.address,
+        routes: runtime
             .config()
             .routes
             .iter()
             .map(|route| route.name.clone())
             .collect(),
-        upstreams: state.runtime.config().upstreams.keys().cloned().collect(),
-        redis_configured: state.runtime.config().redis.is_some(),
-        api_key_count: state.runtime.config().authentication.api_key_sha256.len(),
+        upstreams: runtime.config().upstreams.keys().cloned().collect(),
+        redis_configured: runtime.config().redis.is_some(),
+        api_key_count: runtime.config().authentication.api_key_sha256.len(),
     })
 }
 
@@ -280,6 +281,7 @@ mod tests {
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt as _;
     use relay_config::parse;
+    use relay_proxy::RuntimeState;
     use tower::ServiceExt as _;
 
     use super::*;
@@ -306,10 +308,10 @@ redis:
 "#;
 
     fn control() -> ControlPlane {
-        let runtime = Arc::new(
+        let runtime = Arc::new(RuntimeStore::new(
             RuntimeState::build(parse(CONFIG).expect("valid config"))
                 .expect("runtime should build"),
-        );
+        ));
         ControlPlane::new(runtime, Metrics::new().expect("metrics should register"))
     }
 

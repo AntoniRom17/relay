@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use crate::{
     headers::{prepare_downstream_response, prepare_upstream_request},
-    runtime::{RequestPlan, RuntimeState},
+    runtime::{RequestPlan, RuntimeStore},
 };
 
 const REQUEST_ID: &str = "x-request-id";
@@ -47,7 +47,7 @@ type HttpsClient = Client<HttpsConnector<HttpConnector>, ProxyBody>;
 /// Cloneable Hyper service implementing Relay's core proxy path.
 #[derive(Clone)]
 pub struct ProxyService {
-    runtime: Arc<RuntimeState>,
+    runtime: Arc<RuntimeStore>,
     client: HttpsClient,
     metrics: Metrics,
     request_timeout: Duration,
@@ -58,7 +58,7 @@ pub struct ProxyService {
 impl ProxyService {
     /// Builds an HTTP/1.1 and HTTP/2 client with pooled HTTP and HTTPS connections.
     pub fn new(
-        runtime: Arc<RuntimeState>,
+        runtime: Arc<RuntimeStore>,
         metrics: Metrics,
         request_timeout: Duration,
         connect_timeout: Duration,
@@ -160,13 +160,13 @@ impl ProxyService {
         downstream_protocol: &'static str,
         started: Instant,
     ) -> Result<Response<ProxyBody>, GatewayError> {
-        let plan = self.runtime.plan(&request)?;
+        let runtime = self.runtime.load();
+        let plan = runtime.plan(&request)?;
         let request_method = request.method().as_str().to_owned();
         tracing::Span::current().record("route", plan.route.name.as_str());
         let mut api_key_limit_key = None;
         if let Some(policy) = &plan.route.authentication {
-            let identity = self
-                .runtime
+            let identity = runtime
                 .authenticator()
                 .authenticate(request.headers(), policy)
                 .map_err(|_| GatewayError::Unauthorized)?;

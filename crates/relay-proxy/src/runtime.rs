@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
+use arc_swap::ArcSwap;
 use http::Request;
 use relay_auth::{AuthBuildError, Authenticator};
 use relay_config::{GatewayConfig, RouteConfig};
@@ -18,6 +19,33 @@ pub struct RuntimeState {
     circuits: BTreeMap<String, CircuitBreaker>,
     route_concurrency: BTreeMap<String, Arc<Semaphore>>,
     authenticator: Authenticator,
+}
+
+/// Atomically replaceable runtime state shared by all requests and control handlers.
+#[derive(Debug)]
+pub struct RuntimeStore {
+    active: ArcSwap<RuntimeState>,
+}
+
+impl RuntimeStore {
+    /// Installs the initial validated state.
+    pub fn new(initial: RuntimeState) -> Self {
+        Self {
+            active: ArcSwap::from_pointee(initial),
+        }
+    }
+
+    /// Loads a stable snapshot for one operation.
+    pub fn load(&self) -> Arc<RuntimeState> {
+        self.active.load_full()
+    }
+
+    /// Compiles and atomically installs a new configuration.
+    pub fn reload(&self, config: GatewayConfig) -> Result<(), RuntimeBuildError> {
+        let replacement = Arc::new(RuntimeState::build(config)?);
+        self.active.store(replacement);
+        Ok(())
+    }
 }
 
 impl RuntimeState {
