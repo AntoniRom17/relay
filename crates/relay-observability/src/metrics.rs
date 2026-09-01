@@ -139,6 +139,7 @@ impl Metrics {
 
     /// Records a completed client request.
     pub fn observe_request(&self, route: &str, method: &str, status: u16, seconds: f64) {
+        let method = method_label(method);
         self.inner
             .requests
             .with_label_values(&[route, method, &status.to_string()])
@@ -237,6 +238,15 @@ impl Metrics {
     }
 }
 
+fn method_label(method: &str) -> &str {
+    match method {
+        "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "CONNECT" | "OPTIONS" | "TRACE" | "PATCH" => {
+            method
+        }
+        _ => "OTHER",
+    }
+}
+
 impl MetricsInner {
     fn register(&self) -> Result<(), prometheus::Error> {
         for collector in [
@@ -283,6 +293,7 @@ mod tests {
     fn registry_exposes_stable_metric_names_and_labels() {
         let metrics = Metrics::new().expect("metric descriptors should be valid");
         metrics.observe_request("api", "GET", 200, 0.012);
+        metrics.observe_request("api", "ATTACKER-CONTROLLED", 418, 0.001);
         metrics.set_upstream_health("primary", "http://127.0.0.1:9001", true);
         metrics.cache_event("api", "hit");
 
@@ -296,5 +307,10 @@ mod tests {
             "relay_upstream_health{endpoint=\"http://127.0.0.1:9001\",pool=\"primary\"} 1"
         ));
         assert!(encoded.contains("relay_cache_events_total{outcome=\"hit\",route=\"api\"} 1"));
+        assert!(
+            encoded
+                .contains("relay_requests_total{method=\"OTHER\",route=\"api\",status=\"418\"} 1")
+        );
+        assert!(!encoded.contains("ATTACKER-CONTROLLED"));
     }
 }

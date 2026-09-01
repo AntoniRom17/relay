@@ -18,7 +18,8 @@ Prometheus metrics use bounded dimensions:
 - `relay_cache_events_total`
 
 Endpoint URLs are configuration-controlled metric labels. Request IDs, paths, client IPs, subjects,
-and token-bucket keys are not labels, preventing attacker-driven cardinality.
+and token-bucket keys are not labels, preventing attacker-driven cardinality. Standard HTTP methods
+have individual labels; every extension method is collapsed into `OTHER`.
 
 When `observability.otlp_endpoint` is set, Relay builds a batched OTLP/gRPC span exporter with
 `service.name=relay`. The W3C Trace Context propagator extracts an incoming `traceparent` and injects

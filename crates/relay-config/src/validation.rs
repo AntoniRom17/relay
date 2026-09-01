@@ -143,6 +143,21 @@ fn validate_top_level(config: &GatewayConfig, problems: &mut Vec<String>) {
             );
         }
     }
+    if let Some(endpoint) = config.observability.otlp_endpoint.as_deref() {
+        match url::Url::parse(endpoint) {
+            Ok(url)
+                if matches!(url.scheme(), "http" | "https")
+                    && url.host().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none() =>
+            {
+            }
+            Ok(_) | Err(_) => problems.push(
+                "observability.otlp_endpoint: must be an HTTP(S) URL with a host and no embedded credentials"
+                    .to_owned(),
+            ),
+        }
+    }
 }
 
 fn validate_listeners(config: &GatewayConfig, problems: &mut Vec<String>) {

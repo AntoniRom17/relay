@@ -84,10 +84,7 @@ impl ProxyService {
     ) -> Response<ProxyBody> {
         let request_id = request_id(request.headers().get(REQUEST_ID));
         let method = request.method().clone();
-        let path = request
-            .uri()
-            .path_and_query()
-            .map_or_else(|| "/".to_owned(), ToString::to_string);
+        let path = request.uri().path().to_owned();
         let host = request
             .headers()
             .get(header::HOST)

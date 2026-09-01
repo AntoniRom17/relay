@@ -178,6 +178,18 @@ fn operational_bounds_prevent_runtime_panics_and_pathological_values() {
 }
 
 #[test]
+fn telemetry_endpoints_must_be_safe_urls() {
+    let invalid = MINIMAL.replace(
+        "redis: null",
+        "observability:\n  otlp_endpoint: https://user:secret@collector.example.test:4317\nredis: null",
+    );
+
+    let error = parse(&invalid).expect_err("credential-bearing telemetry URL must be rejected");
+
+    assert!(error.to_string().contains("observability.otlp_endpoint"));
+}
+
+#[test]
 fn remote_admin_binding_requires_explicit_opt_in() {
     let unsafe_default = MINIMAL.replace("routes:", "admin:\n  address: 0.0.0.0:9090\nroutes:");
     assert!(

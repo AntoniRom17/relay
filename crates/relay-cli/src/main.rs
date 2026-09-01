@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Run { config } => run(config).await,
         Command::Validate { config } => {
             let config = load_from_path(&config)?;
+            RuntimeState::build(config.clone()).context("runtime compilation failed")?;
             println!(
                 "valid: {} listener(s), {} route(s), {} upstream pool(s)",
                 config.listeners.len(),
