@@ -114,16 +114,7 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
     let shutdown = Shutdown::new(Duration::from_millis(config.shutdown_grace_ms));
     let runtime = Arc::new(RuntimeStore::new(RuntimeState::build(config.clone())?));
     let local_limiter = Arc::new(LocalRateLimiter::new(100_000));
-    let redis_limiter = if config
-        .routes
-        .iter()
-        .filter_map(|route| route.rate_limit.as_ref())
-        .any(|limit| limit.distributed)
-    {
-        let redis = config
-            .redis
-            .as_ref()
-            .context("distributed rate limiting requires Redis configuration")?;
+    let redis_limiter = if let Some(redis) = config.redis.as_ref() {
         Some(
             RedisRateLimiter::connect(&redis.url, redis.key_prefix.clone())
                 .await
@@ -139,6 +130,15 @@ async fn run(path: PathBuf) -> anyhow::Result<()> {
         .min()
         .map_or(Duration::from_secs(3), Duration::from_millis);
     let mut servers = JoinSet::new();
+    {
+        let runtime = Arc::clone(&runtime);
+        let metrics = metrics.clone();
+        let shutdown = shutdown.clone();
+        let config_path = path.clone();
+        servers.spawn(
+            async move { watch_configuration(config_path, runtime, metrics, shutdown).await },
+        );
+    }
 
     for listener in config.listeners.clone() {
         let proxy = ProxyService::new(
@@ -233,4 +233,107 @@ async fn shutdown_signal() -> std::io::Result<()> {
     {
         tokio::signal::ctrl_c().await
     }
+}
+
+async fn watch_configuration(
+    path: PathBuf,
+    runtime: Arc<RuntimeStore>,
+    metrics: Metrics,
+    shutdown: Shutdown,
+) -> anyhow::Result<()> {
+    let mut stamp = file_stamp(&path).await?;
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => return Ok(()),
+            _ = interval.tick() => {
+                let current_stamp = match file_stamp(&path).await {
+                    Ok(stamp) => stamp,
+                    Err(error) => {
+                        metrics.config_reload("read_error");
+                        error!(%error, config = %path.display(), "failed to inspect configuration for reload");
+                        continue;
+                    }
+                };
+                if current_stamp == stamp {
+                    continue;
+                }
+                stamp = current_stamp;
+                let load_path = path.clone();
+                let candidate = tokio::task::spawn_blocking(move || load_from_path(load_path)).await;
+                let candidate = match candidate {
+                    Ok(Ok(candidate)) => candidate,
+                    Ok(Err(error)) => {
+                        metrics.config_reload("validation_error");
+                        error!(%error, config = %path.display(), "configuration reload rejected");
+                        continue;
+                    }
+                    Err(error) => {
+                        metrics.config_reload("task_error");
+                        error!(%error, "configuration reload task failed");
+                        continue;
+                    }
+                };
+                let current = runtime.load();
+                if let Err(error) = ensure_reload_compatible(current.config(), &candidate) {
+                    metrics.config_reload("restart_required");
+                    error!(%error, "configuration reload requires a process restart");
+                    continue;
+                }
+                drop(current);
+                match runtime.reload(candidate) {
+                    Ok(()) => {
+                        metrics.config_reload("success");
+                        info!(config = %path.display(), "configuration reloaded atomically");
+                    }
+                    Err(error) => {
+                        metrics.config_reload("compile_error");
+                        error!(%error, "configuration reload could not be compiled");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    modified: std::time::SystemTime,
+    length: u64,
+}
+
+async fn file_stamp(path: &PathBuf) -> std::io::Result<FileStamp> {
+    let metadata = tokio::fs::metadata(path).await?;
+    Ok(FileStamp {
+        modified: metadata.modified()?,
+        length: metadata.len(),
+    })
+}
+
+fn ensure_reload_compatible(
+    current: &GatewayConfig,
+    candidate: &GatewayConfig,
+) -> anyhow::Result<()> {
+    let current_immutable = serde_yaml::to_string(&(
+        &current.listeners,
+        &current.admin,
+        &current.redis,
+        &current.observability,
+        current.shutdown_grace_ms,
+    ))?;
+    let candidate_immutable = serde_yaml::to_string(&(
+        &candidate.listeners,
+        &candidate.admin,
+        &candidate.redis,
+        &candidate.observability,
+        candidate.shutdown_grace_ms,
+    ))?;
+    if current_immutable != candidate_immutable {
+        bail!(
+            "listeners, admin, Redis, observability, and shutdown settings are immutable at runtime"
+        );
+    }
+    Ok(())
 }
