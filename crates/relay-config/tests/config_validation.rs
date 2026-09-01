@@ -149,6 +149,35 @@ fn api_key_routes_require_keys_and_a_valid_header() {
 }
 
 #[test]
+fn operational_bounds_prevent_runtime_panics_and_pathological_values() {
+    let invalid = MINIMAL
+        .replace(
+            "address: 127.0.0.1:8080",
+            "address: 127.0.0.1:8080\n    max_connections: 1000001\n    max_header_bytes: 1048577",
+        )
+        .replace("name: api", "name: 'invalid route name'")
+        .replace("host: api.example.test", "host: example.com:443")
+        .replace(
+            "upstream: api",
+            "upstream: api\n    concurrency_limit: 1000001\n    retry:\n      max_attempts: 11\n      base_backoff_ms: 60001\n      max_backoff_ms: 60001",
+        )
+        .replace(
+            "api:\n    endpoints:",
+            "api:\n    connect_timeout_ms: 60001\n    concurrency_limit: 1000001\n    endpoints:",
+        );
+
+    let error = parse(&invalid).expect_err("unsafe operational bounds must be rejected");
+    let message = error.to_string();
+
+    assert!(message.contains("max_connections"));
+    assert!(message.contains("max_header_bytes"));
+    assert!(message.contains("identifier"));
+    assert!(message.contains("without a port"));
+    assert!(message.contains("max_attempts"));
+    assert!(message.contains("connect timeout"));
+}
+
+#[test]
 fn remote_admin_binding_requires_explicit_opt_in() {
     let unsafe_default = MINIMAL.replace("routes:", "admin:\n  address: 0.0.0.0:9090\nroutes:");
     assert!(

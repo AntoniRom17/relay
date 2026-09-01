@@ -43,7 +43,7 @@ pub struct ListenerConfig {
     /// Maximum concurrently accepted connections.
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
-    /// Maximum duration of a complete client request.
+    /// Maximum duration to obtain upstream response headers; also bounds slow client headers.
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
     /// Maximum accepted request header bytes.

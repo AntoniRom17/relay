@@ -11,10 +11,11 @@ bounded state can recover without scanning the map on the request path.
 
 ## Retries and deadlines
 
-The listener request timeout currently forms the complete upstream-attempt deadline. Connect
-timeout is configured separately on the connector. Retries apply only when the method is idempotent
-and the request body reports an exact size of zero. This avoids replaying partially consumed bodies.
-Backoff doubles from the configured base, caps before jitter, and adds up to 50 percent jitter.
+The listener request timeout currently bounds upstream response-header acquisition, including any
+streamed request upload. It does not impose one total deadline on the response body. Connect timeout
+is configured separately per pool client. Retries apply only when the method is idempotent and the
+request body reports an exact size of zero. This avoids replaying partially consumed bodies. Backoff
+doubles from the configured base, caps before jitter, and adds up to 50 percent jitter.
 
 ## Circuit breaker
 

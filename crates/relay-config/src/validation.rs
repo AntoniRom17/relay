@@ -16,6 +16,19 @@ const MAX_API_KEYS: usize = 10_000;
 const MAX_JWT_PROVIDERS: usize = 1_000;
 const MAX_CACHE_ENTRIES: u64 = 10_000;
 const MAX_ROUTE_CACHE_BODY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_IDENTIFIER_BYTES: usize = 64;
+const MAX_CONCURRENCY: usize = 1_000_000;
+const MAX_HEADER_BYTES: usize = 1024 * 1024;
+const MAX_BODY_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_REQUEST_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
+const MAX_SHUTDOWN_GRACE_MS: u64 = 5 * 60 * 1_000;
+const MAX_CONNECT_TIMEOUT_MS: u64 = 60 * 1_000;
+const MAX_RETRY_ATTEMPTS: u32 = 10;
+const MAX_RETRY_BACKOFF_MS: u64 = 60 * 1_000;
+const MAX_HEALTH_INTERVAL_MS: u64 = 60 * 60 * 1_000;
+const MAX_CIRCUIT_RECOVERY_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_CACHE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+const MAX_ENDPOINT_URL_BYTES: usize = 2_048;
 
 /// Failure to read, decode, or semantically validate configuration.
 #[derive(Debug, Error)]
@@ -107,6 +120,10 @@ fn validate_top_level(config: &GatewayConfig, problems: &mut Vec<String>) {
     }
     if config.shutdown_grace_ms == 0 {
         problems.push("shutdown_grace_ms: must be greater than zero".to_owned());
+    } else if config.shutdown_grace_ms > MAX_SHUTDOWN_GRACE_MS {
+        problems.push(format!(
+            "shutdown_grace_ms: must not exceed {MAX_SHUTDOWN_GRACE_MS}"
+        ));
     }
     if let Some(limit) = &config.gateway_rate_limit {
         if limit.requests_per_second == 0 || limit.burst_capacity == 0 {
@@ -137,19 +154,20 @@ fn validate_listeners(config: &GatewayConfig, problems: &mut Vec<String>) {
                 listener.address
             ));
         }
-        if listener.max_connections == 0 {
+        if listener.max_connections == 0 || listener.max_connections > MAX_CONCURRENCY {
             problems.push(format!(
-                "listeners[{index}].max_connections: must be greater than zero"
+                "listeners[{index}].max_connections: must be within 1..={MAX_CONCURRENCY}"
             ));
         }
-        if listener.request_timeout_ms == 0 {
+        if listener.request_timeout_ms == 0 || listener.request_timeout_ms > MAX_REQUEST_TIMEOUT_MS
+        {
             problems.push(format!(
-                "listeners[{index}].request_timeout_ms: must be greater than zero"
+                "listeners[{index}].request_timeout_ms: must be within 1..={MAX_REQUEST_TIMEOUT_MS}"
             ));
         }
-        if listener.max_header_bytes < 1_024 {
+        if !(1_024..=MAX_HEADER_BYTES).contains(&listener.max_header_bytes) {
             problems.push(format!(
-                "listeners[{index}].max_header_bytes: must be at least 1024"
+                "listeners[{index}].max_header_bytes: must be within 1024..={MAX_HEADER_BYTES}"
             ));
         }
     }
@@ -184,6 +202,10 @@ fn validate_route(
     let field = format!("routes[{index}]");
     if route.name.trim().is_empty() {
         problems.push(format!("{field}.name: must not be empty"));
+    } else if !valid_identifier(&route.name) {
+        problems.push(format!(
+            "{field}.name: must be a 1..={MAX_IDENTIFIER_BYTES} byte identifier using ASCII letters, digits, `.`, `_`, or `-`"
+        ));
     } else if !route_names.insert(route.name.clone()) {
         problems.push(format!(
             "{field}.name: duplicate route name `{}`",
@@ -206,15 +228,26 @@ fn validate_route(
     validate_route_policies(config, route, &field, problems);
     if route.max_body_bytes == 0 {
         problems.push(format!("{field}.max_body_bytes: must be greater than zero"));
-    }
-    if route.concurrency_limit == 0 {
+    } else if route.max_body_bytes > MAX_BODY_BYTES {
         problems.push(format!(
-            "{field}.concurrency_limit: must be greater than zero"
+            "{field}.max_body_bytes: must not exceed {MAX_BODY_BYTES}"
+        ));
+    }
+    if route.concurrency_limit == 0 || route.concurrency_limit > MAX_CONCURRENCY {
+        problems.push(format!(
+            "{field}.concurrency_limit: must be within 1..={MAX_CONCURRENCY}"
         ));
     }
 }
 
 fn validate_route_matchers(route: &RouteConfig, field: &str, problems: &mut Vec<String>) {
+    if let Some(host) = route.host.as_deref()
+        && url::Host::parse(host).is_err()
+    {
+        problems.push(format!(
+            "{field}.host: `{host}` is not a valid hostname or IP address without a port"
+        ));
+    }
     for (path_field, path) in [
         ("path_exact", route.path_exact.as_deref()),
         ("path_prefix", route.path_prefix.as_deref()),
@@ -251,6 +284,18 @@ fn validate_retry(route: &RouteConfig, field: &str, problems: &mut Vec<String>) 
     if route.retry.base_backoff_ms > route.retry.max_backoff_ms {
         problems.push(format!(
             "{field}.retry: base_backoff_ms must not exceed max_backoff_ms"
+        ));
+    }
+    if route.retry.max_attempts > MAX_RETRY_ATTEMPTS {
+        problems.push(format!(
+            "{field}.retry.max_attempts: must not exceed {MAX_RETRY_ATTEMPTS}"
+        ));
+    }
+    if route.retry.base_backoff_ms > MAX_RETRY_BACKOFF_MS
+        || route.retry.max_backoff_ms > MAX_RETRY_BACKOFF_MS
+    {
+        problems.push(format!(
+            "{field}.retry: backoff durations must not exceed {MAX_RETRY_BACKOFF_MS} ms"
         ));
     }
     for status in &route.retry.statuses {
@@ -316,6 +361,11 @@ fn validate_cache(route: &RouteConfig, field: &str, problems: &mut Vec<String>) 
             "{field}.cache: TTL, entry capacity, and body limit must be greater than zero"
         ));
     }
+    if cache.ttl_seconds > MAX_CACHE_TTL_SECONDS {
+        problems.push(format!(
+            "{field}.cache.ttl_seconds: must not exceed {MAX_CACHE_TTL_SECONDS}"
+        ));
+    }
     if route.authentication.is_some() {
         problems.push(format!(
             "{field}.cache: authenticated routes are not cacheable without an explicit private-cache policy"
@@ -347,6 +397,11 @@ fn validate_upstreams(config: &GatewayConfig, problems: &mut Vec<String>) {
 
 fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<String>) {
     let field = format!("upstreams.{name}");
+    if !valid_identifier(name) {
+        problems.push(format!(
+            "{field}: pool name must be a 1..={MAX_IDENTIFIER_BYTES} byte identifier using ASCII letters, digits, `.`, `_`, or `-`"
+        ));
+    }
     if upstream.endpoints.is_empty() {
         problems.push(format!(
             "{field}.endpoints: at least one endpoint is required"
@@ -357,9 +412,13 @@ fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<S
             "{field}.endpoints: must not contain more than {MAX_ENDPOINTS_PER_POOL} endpoints"
         ));
     }
-    if upstream.connect_timeout_ms == 0 || upstream.concurrency_limit == 0 {
+    if upstream.connect_timeout_ms == 0
+        || upstream.connect_timeout_ms > MAX_CONNECT_TIMEOUT_MS
+        || upstream.concurrency_limit == 0
+        || upstream.concurrency_limit > MAX_CONCURRENCY
+    {
         problems.push(format!(
-            "{field}: connect timeout and concurrency limit must be greater than zero"
+            "{field}: connect timeout must be within 1..={MAX_CONNECT_TIMEOUT_MS} ms and concurrency within 1..={MAX_CONCURRENCY}"
         ));
     }
     let mut urls = HashSet::new();
@@ -368,6 +427,11 @@ fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<S
         if !matches!(endpoint.url.scheme(), "http" | "https") {
             problems.push(format!(
                 "{endpoint_field}.url: scheme must be http or https"
+            ));
+        }
+        if endpoint.url.as_str().len() > MAX_ENDPOINT_URL_BYTES {
+            problems.push(format!(
+                "{endpoint_field}.url: must not exceed {MAX_ENDPOINT_URL_BYTES} bytes"
             ));
         }
         if endpoint.url.host().is_none() {
@@ -402,6 +466,11 @@ fn validate_upstream(name: &str, upstream: &UpstreamConfig, problems: &mut Vec<S
     {
         problems.push(format!(
             "{field}.circuit_breaker: thresholds and timeout must be greater than zero"
+        ));
+    }
+    if circuit.recovery_timeout_ms > MAX_CIRCUIT_RECOVERY_MS {
+        problems.push(format!(
+            "{field}.circuit_breaker.recovery_timeout_ms: must not exceed {MAX_CIRCUIT_RECOVERY_MS}"
         ));
     }
 }
@@ -455,6 +524,16 @@ fn validate_upstream_health(upstream: &UpstreamConfig, field: &str, problems: &m
             "{field}.health_check: durations and thresholds must be greater than zero"
         ));
     }
+    if health.interval_ms > MAX_HEALTH_INTERVAL_MS {
+        problems.push(format!(
+            "{field}.health_check.interval_ms: must not exceed {MAX_HEALTH_INTERVAL_MS}"
+        ));
+    }
+    if health.timeout_ms > health.interval_ms {
+        problems.push(format!(
+            "{field}.health_check.timeout_ms: must not exceed interval_ms"
+        ));
+    }
     if health.expected_status_min > health.expected_status_max
         || health.expected_status_max > 599
         || health.expected_status_min < 100
@@ -484,6 +563,11 @@ fn validate_authentication(config: &GatewayConfig, problems: &mut Vec<String>) {
         }
     }
     for (name, provider) in &config.authentication.jwt_providers {
+        if !valid_identifier(name) {
+            problems.push(format!(
+                "authentication.jwt_providers.{name}: provider name must be a 1..={MAX_IDENTIFIER_BYTES} byte identifier using ASCII letters, digits, `.`, `_`, or `-`"
+            ));
+        }
         if provider.issuer.trim().is_empty() {
             problems.push(format!(
                 "authentication.jwt_providers.{name}.issuer: must not be empty"
@@ -500,4 +584,12 @@ fn validate_authentication(config: &GatewayConfig, problems: &mut Vec<String>) {
             ));
         }
     }
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_IDENTIFIER_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }

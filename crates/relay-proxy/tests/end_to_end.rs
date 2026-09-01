@@ -282,7 +282,7 @@ async fn route_body_limits_reject_before_contacting_the_upstream() {
             "relay_requests_total{method=\"POST\",route=\"integration\",status=\"413\"} 1"
         )
     );
-    assert!(!metrics.contains("route=\"unmatched\",status=\"413\""));
+    assert!(!metrics.contains("route=\"<unmatched>\",status=\"413\""));
 
     relay.stop().await;
     upstream_task.abort();

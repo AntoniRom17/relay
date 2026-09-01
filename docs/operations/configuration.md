@@ -11,7 +11,7 @@ before any socket is bound. Run `relay validate --config <path>` in deployment a
 - `admin` controls the distinct health/metrics socket. Non-loopback binds require
   `allow_remote: true` because this API has no built-in authentication.
 - `routes` contains ordered matchers and request policies. Names must be unique and are metric
-  labels, so keep them stable and low-cardinality.
+  labels, so they are bounded ASCII identifiers and should remain stable.
 - `upstreams` maps route targets to backend URLs, balancing, health checks, concurrency, and circuit
   settings.
 - `authentication` holds API-key SHA-256 digests and named asymmetric JWT providers.
@@ -70,4 +70,4 @@ Validation aggregates independent failures so a deployment can fix them in one p
 among other cases, duplicate listeners or route names, unknown pools and JWT providers, invalid
 paths/methods/headers, zero bounds, invalid retry statuses, credential-bearing upstream URLs,
 distributed limits without Redis, oversized cache memory envelopes, excessive configuration
-cardinality, and remote admin binds without explicit opt-in.
+cardinality or concurrency/time/body/header values, and remote admin binds without explicit opt-in.

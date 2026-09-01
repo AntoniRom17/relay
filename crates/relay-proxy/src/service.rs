@@ -100,7 +100,7 @@ impl ProxyService {
         let runtime = self.runtime.load();
         let metric_route = runtime
             .route_name(&request)
-            .unwrap_or_else(|| "unmatched".to_owned());
+            .unwrap_or_else(|| "<unmatched>".to_owned());
 
         let span = info_span!(
             "proxy.request",
@@ -160,7 +160,7 @@ impl ProxyService {
         started: Instant,
     ) -> Result<Response<ProxyBody>, GatewayError> {
         if let Some(limit) = &runtime.config().gateway_rate_limit {
-            self.enforce_rate_limit("gateway", limit, client_ip, None)
+            self.enforce_rate_limit("<gateway>", limit, client_ip, None)
                 .await?;
         }
         let plan = runtime.plan(&request)?;
@@ -382,7 +382,7 @@ impl ProxyService {
     ) -> Result<(), GatewayError> {
         let (scope, identity) = match config.key {
             RateLimitKey::Route => (
-                if route == "gateway" {
+                if route == "<gateway>" {
                     "gateway"
                 } else {
                     "route"
