@@ -33,7 +33,7 @@ anyhow = "1.0"
 arc-swap = "1.7"
 async-trait = "0.1"
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 criterion = "0.8"
@@ -46,20 +46,20 @@ http-body-util = "0.1"
 hyper = { version = "1.7", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "tokio"] }
-jsonwebtoken = "9.3"
+jsonwebtoken = "11.1"
 prometheus = "0.14"
-opentelemetry = "0.30"
-opentelemetry-otlp = { version = "0.30", default-features = false, features = ["grpc-tonic", "trace"] }
-opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
+opentelemetry = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace"] }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 proptest = "1.7"
-rand = "0.8"
-redis = { version = "0.32", features = ["aio", "connection-manager", "script", "tokio-comp"], default-features = false }
+rand = "0.9"
+redis = { version = "1.7", features = ["aio", "connection-manager", "script", "tokio-comp"], default-features = false }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
@@ -68,7 +68,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tower = { version = "0.5", features = ["buffer", "limit", "load-shed", "timeout", "util"] }
 tower-http = { version = "0.6", features = ["catch-panic", "limit", "request-id", "trace"] }
 tracing = "0.1"
-tracing-opentelemetry = "0.31"
+tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
